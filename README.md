@@ -1,4 +1,4 @@
-# Jev Assist
+# Computer Guidance with Jev
 
 A native Mac prototype that listens while you talk through what you want to do and highlights a helpful control on your screen. You do every click, keystroke, and scroll.
 
@@ -11,8 +11,8 @@ There is no required goal-setting step or scripted task flow. Jev interprets you
 Requires macOS 13 or newer, Swift 5.9+ from Apple's Command Line Tools, and a current stable Rust toolchain (`cargo`). The native shell has no third-party Swift dependencies; the Rust engine's dependencies are pinned in `engine/Cargo.lock`. Local speech recognition also requires support for your current language and device; typed input is available when it is unavailable.
 
 ```sh
-git clone https://github.com/eligrip/jev-assist.git
-cd jev-assist
+git clone https://github.com/eligrip/computer-guidance-with-jev.git
+cd computer-guidance-with-jev
 python3 scripts/setup-typesafe-key.py
 ./scripts/build.sh
 ./scripts/run.sh
