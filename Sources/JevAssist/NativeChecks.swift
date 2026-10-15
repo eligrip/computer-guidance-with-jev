@@ -95,6 +95,8 @@ enum NativeChecks {
         expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: true) == nil, "available Apple recognition is usable without local assets after opt-in")
         expect(automaticSpeech.blocker(recognizerExists: false, onDeviceSupported: false, serviceAvailable: true) != nil, "unsupported speech language is reported separately")
         expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: false) != nil, "service outage is reported separately from local asset availability")
+        SetupChecks.run { expect($0, $1) }
+        checks += CaptureSurfaceChecks.run()
         print("Native checks passed: \(checks)")
     }
 }

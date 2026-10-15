@@ -3,6 +3,12 @@ import AppKit
 @MainActor
 final class HighlightOverlay {
     private var panel: NSPanel?
+    var style: HighlightStyle = .softOutline {
+        didSet {
+            (panel?.contentView as? HighlightView)?.style = style
+            panel?.contentView?.needsDisplay = true
+        }
+    }
 
     func show(coreGraphicsRect rect: CGRect) {
         // AppKit uses bottom-left coordinates relative to the primary display.
@@ -21,7 +27,9 @@ final class HighlightOverlay {
             panel.level = .screenSaver
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             panel.sharingType = .none
-            panel.contentView = HighlightView()
+            let view = HighlightView()
+            view.style = style
+            panel.contentView = view
             self.panel = panel
         }
         panel?.setFrame(cocoaRect, display: true)
@@ -37,17 +45,9 @@ final class HighlightOverlay {
 }
 
 private final class HighlightView: NSView {
+    var style = HighlightStyle.softOutline
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        let rect = bounds.insetBy(dx: 5, dy: 5)
-        let outer = NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7)
-        NSColor.white.withAlphaComponent(0.95).setStroke()
-        outer.lineWidth = 6
-        outer.stroke()
-        NSColor.systemTeal.setStroke()
-        outer.lineWidth = 3
-        outer.stroke()
-        NSColor.systemTeal.withAlphaComponent(0.07).setFill()
-        outer.fill()
+        HighlightDrawing.draw(style: style, target: bounds.insetBy(dx: 4, dy: 4))
     }
 }

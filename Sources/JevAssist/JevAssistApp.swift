@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
     private let session = SessionController()
+    private lazy var setup = SetupCoordinator(languageID: session.speechLanguageID, mode: session.speechMode)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -37,13 +38,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isReleasedWhenClosed = false
         panel.level = .floating
         panel.center()
-        panel.contentView = NSHostingView(rootView: SessionView(session: session, onStart: { [weak self] in
+        panel.contentView = NSHostingView(rootView: SessionView(session: session, setup: setup, onStart: { [weak self] in
             self?.panel.orderOut(nil)
             self?.session.returnToObservedApp()
             Task {
                 await self?.session.start()
                 if self?.session.isRunning == false { self?.showPanel() }
             }
+        }, onSetupVisibilityChanged: { [weak self] visible in
+            // Keep System Settings unobstructed while the user grants access.
+            self?.panel.level = visible ? .normal : .floating
         }))
         session.onRunningChanged = { [weak self] active in
             self?.statusItem.button?.image = NSImage(systemSymbolName: active ? "viewfinder.circle.fill" : "viewfinder",
@@ -68,11 +72,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 private struct SessionView: View {
     @ObservedObject var session: SessionController
+    @ObservedObject var setup: SetupCoordinator
     let onStart: () -> Void
+    let onSetupVisibilityChanged: (Bool) -> Void
     @State private var draft = ""
     @State private var key = ""
     @State private var showingSettings = false
     @State private var showingSpeechSettings = false
+    @State private var showingSetup = UserDefaults.standard.bool(forKey: "setupInProgress")
+    @State private var showingHighlightStyles = false
 
     var body: some View {
         ScrollView {
@@ -96,7 +104,7 @@ private struct SessionView: View {
             }
             .padding(12).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
 
-            Button(action: { session.isRunning ? session.stop() : onStart() }) {
+            Button(action: startOrSetUp) {
                 Label(session.isRunning ? "Stop help session" : "Start help session",
                       systemImage: session.isRunning ? "stop.fill" : "mic.fill")
                     .font(.system(size: 15, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 7)
@@ -105,7 +113,7 @@ private struct SessionView: View {
             .controlSize(.large)
 
             if !session.isRunning {
-                Text("During a session, the active window and your words are sent to Jev. \(session.speechPrivacyDescription) You do every click.")
+                Text("During a session, the active window, visible Dock, and your words are sent to Jev. \(session.speechPrivacyDescription) You do every click.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -118,8 +126,6 @@ private struct SessionView: View {
                 }.frame(height: 85)
                 Text(session.speechStatus).font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Speech settings") { showingSpeechSettings = true }
-                    .buttonStyle(.link).font(.system(size: 12))
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -140,6 +146,7 @@ private struct SessionView: View {
             Divider()
             HStack {
                 Button("Your notes") { session.openNotes() }
+                Button("Highlight style") { showingHighlightStyles = true }
                 Spacer()
                 Text(session.metrics).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                 Button { showingSettings.toggle() } label: { Image(systemName: "gearshape") }
@@ -154,9 +161,8 @@ private struct SessionView: View {
                         Button("Save") { session.saveAPIKey(key); key = "" }.disabled(key.isEmpty)
                     }
                     HStack {
-                        Button("Speech settings") { showingSpeechSettings = true }
-                        Button("Screen access") { session.openScreenPermission() }
-                        Button("Accessibility") { session.requestAccessibility() }
+                        Button("Permissions") { refreshSetup(); showingSetup = true }
+                        Button("Advanced speech") { showingSpeechSettings = true }
                         Spacer()
                         Button("Quit") { NSApp.terminate(nil) }
                     }.font(.caption)
@@ -166,6 +172,24 @@ private struct SessionView: View {
         .padding(24).frame(width: 440)
         }.frame(width: 440, height: 640)
         .sheet(isPresented: $showingSpeechSettings) { SpeechSettingsView(session: session) }
+        .sheet(isPresented: $showingHighlightStyles) { HighlightStylePickerView(session: session) }
+        .sheet(isPresented: $showingSetup) {
+            SetupView(setup: setup, readyActionTitle: session.isRunning ? "Done" : "Start help session",
+                      isHelpSessionActive: session.isRunning, onReady: {
+                showingSetup = false
+                if !session.isRunning { onStart() }
+            }, onClose: { showingSetup = false })
+        }
+        .onChange(of: showingSetup) {
+            UserDefaults.standard.set($0, forKey: "setupInProgress")
+            onSetupVisibilityChanged($0)
+        }
+        .onChange(of: session.speechLanguageID) { _ in refreshSetup() }
+        .onChange(of: session.speechMode) { _ in refreshSetup() }
+        .onAppear {
+            refreshSetup()
+            onSetupVisibilityChanged(showingSetup)
+        }
     }
 
     private func sectionLabel(_ label: String) -> some View {
@@ -177,6 +201,18 @@ private struct SessionView: View {
         guard !text.isEmpty else { return }
         session.addTypedText(text)
         draft = ""
+    }
+
+    private func refreshSetup() {
+        setup.configure(languageID: session.speechLanguageID, mode: session.speechMode)
+        setup.refresh()
+    }
+
+    private func startOrSetUp() {
+        if session.isRunning { session.stop(); return }
+        refreshSetup()
+        if setup.readiness.isReady { onStart() }
+        else { showingSetup = true }
     }
 }
 

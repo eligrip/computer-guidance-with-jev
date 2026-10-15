@@ -20,17 +20,17 @@ python3 scripts/setup-typesafe-key.py
 
 The setup helper reads the API key without echoing it and writes an ignored `.env.local` with owner-only permissions. The app can read that file in this checkout; a key entered in the app's settings is stored in macOS Keychain. Never put a key into the browser extension.
 
-1. Open the app and allow microphone and speech recognition when prompted.
-2. Grant **Screen Recording** in System Settings → Privacy & Security so the app can capture the window you're using. macOS may require quitting and reopening the app.
-3. Optionally grant **Accessibility** for additional information about native controls.
-4. Open the app or page you want help with. Open Jev Assist from its menu-bar viewfinder icon and choose **Start help session**.
-5. Talk naturally. The app returns focus to your previous app and draws a click-through highlight.
+1. Choose **Start help session**. If setup is needed, the app walks you through three groups: **Screen access**, **Accessibility**, and **Voice**.
+2. Follow the single next-step button. Already-granted access gets a checkmark. Voice combines microphone access, speech permission, and local Dictation setup. The app checks automatically when you return from System Settings and resumes setup after a required restart.
+3. When all three are ready, choose **Start help session**, open the app you want help with, and talk naturally.
 
 You can also type a thought into the panel. The menu-bar icon opens session controls; **Stop help session** ends capture and transcription and removes the box.
 
+**Highlight style** offers three native vector previews: Soft outline (default), Corner guides, and Underline. A style change redraws the current target without moving it or resetting the highlight latch.
+
 ### Speech setup and recovery
 
-Click **Speech settings** beneath the transcript to choose your spoken language and recognition mode. **On-device only** is the default. Apple can report its recognition service as available even when its on-device model is unavailable to this app. That is a language/model availability check, not a claim that your Mac cannot transcribe speech.
+Normal setup uses the **Voice** step, with no provider or language choices to navigate. **Settings → Permissions** reopens the three-step guide. **Settings → Advanced speech** lets you change the spoken language or recognition mode when needed. **On-device only** is the default. Apple can report its recognition service as available even when its on-device model is unavailable to this app. That is a language/model availability check, not a claim that your Mac cannot transcribe speech.
 
 If the local model is unavailable, open **macOS Dictation settings**, enable Dictation, and select the same language under Keyboard → Dictation. Allow time for Apple to prepare the language assets, then use **Check availability again** and **Apply and retry microphone**. The app checks the actual speech API capability; it does not assume enabling Dictation guarantees that the assets are ready.
 
@@ -61,7 +61,7 @@ Add preferred apps, recurring tasks, or vocabulary such as what you mean by “m
 A Rust engine handles Jev requests, verbatim goal selection, and answer validation. A thin Swift shell handles macOS speech, screen capture, permissions, and the overlay. They communicate over private process pipes; there is no local HTTP server. The engine reuses its HTTP client and handles goal and guidance requests concurrently.
 
 - **Speech:** Apple's speech recognizer streams partial transcripts in your selected language. On-device-only mode keeps audio local; online recognition is an explicit alternative. Revisions replace provisional words, rather than duplicating them.
-- **Observation:** the app captures the active external window and compares compact image samples to detect meaningful changes. Its own highlight is excluded from capture.
+- **Observation:** the app captures the active external window, its menus/popovers, and the visible Dock on the same display. With no foreground window, it can capture the visible Dock alone. Other apps, wallpaper, and its own highlight are excluded. Separate Dock samples detect icon layout changes; a hidden Dock cannot supply visible targets until the user reveals it.
 - **Guidance:** `jev-1.14.0` receives recent speech, the goal anchor, notes, current screenshot, and available browser/accessibility context. A Box question locates the next useful target; a Noul question checks whether a useful target is visible.
 - **Goal anchor:** a separate, intermittent Choice request selects an exact passage from the transcript, keeps the previous anchor, or clears it. The app never asks Jev to generate goal text.
 - **Presentation:** a deterministic latch accepts a box for the current screen generation. Responses from old screens and stopped sessions are discarded. Further responses cannot move the box on the unchanged screen.
@@ -71,13 +71,13 @@ Images and Box are experimental TypeSafe features. Confidence thresholds and scr
 
 ### From Jev's box to your screen
 
-Each screenshot retains the captured window's position and size in macOS screen points, plus any image padding. For a normalized horizontal edge `u`, the screen coordinate is `windowX + ((u - paddingLeft) / contentWidth) * windowWidth`; vertical edges use the same calculation. The overlay then converts the top-origin screen coordinates to AppKit's bottom-origin coordinates. Retina pixels never get mistaken for screen points. Window moves and layout changes invalidate earlier requests.
+Each screenshot retains the captured surfaces' combined position and size in macOS screen points, plus any image padding. For a normalized horizontal edge `u`, the screen coordinate is `captureX + ((u - paddingLeft) / contentWidth) * captureWidth`; vertical edges use the same calculation. The overlay then converts the top-origin screen coordinates to AppKit's bottom-origin coordinates. Retina pixels never get mistaken for screen points. Window moves and Dock/layout changes invalidate earlier requests.
 
 Native self-tests check padding, image limits, coordinate scaling, and a display placed above and left of the primary screen. Physical multi-monitor and live permission-dependent capture still need hands-on testing.
 
 ## Data boundaries
 
-During a help session, the current external window image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac in the default on-device-only mode. If you explicitly allow Apple online recognition, audio may be sent to Apple for transcription; audio is never sent to TypeSafe. Screen images and transcripts are not written to logs or saved as recordings. The optional extension writes only its latest context to a local file with restricted permissions.
+During a help session, the current external window and visible Dock image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac in the default on-device-only mode. If you explicitly allow Apple online recognition, audio may be sent to Apple for transcription; audio is never sent to TypeSafe. Screen images and transcripts are not written to logs or saved as recordings. The optional extension writes only its latest context to a local file with restricted permissions.
 
 The app never clicks, types, scrolls, or runs commands on your behalf. Page content is treated as evidence, not executable instructions. A browser page may contain sensitive text, so only start sharing a page you intend to use with the assistant.
 

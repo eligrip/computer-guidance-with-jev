@@ -270,19 +270,28 @@ fn parse_guidance(
         .map_err(|_| EngineError::local("Jev returned an invalid Box or Noul answer."))?;
     let target = response.answers.target;
     let presence = response.answers.target_present;
-    if target.r#type != "box"
-        || presence.r#type != "noul"
-        || !target.r#box.is_valid()
-        || !valid_probability(target.confidence)
-        || !valid_probability(presence.noul)
-    {
+    if target.r#type != "box" || presence.r#type != "noul" {
         return Err(EngineError::local(
-            "Box edges or probabilities are outside their valid ranges.",
+            "Jev returned an invalid Box or Noul answer type.",
+        ));
+    }
+    if !valid_probability(target.confidence) || !valid_probability(presence.noul) {
+        return Err(EngineError::local(
+            "Jev returned probabilities outside the valid zero-to-one range.",
         ));
     }
     let supported = presence.noul >= minimum_presence && target.confidence >= minimum_confidence;
+    // Box always supplies coordinates, even when no useful target exists. Gate
+    // first so an unused speculative answer cannot interrupt the help session.
+    // Experimental geometry can also be unusable despite high confidence; in
+    // that case abstain rather than invent a target by clamping or widening it.
+    let visible_box = if supported && target.r#box.is_valid() {
+        Some(target.r#box)
+    } else {
+        None
+    };
     Ok(GuidanceResult {
-        r#box: supported.then_some(target.r#box),
+        r#box: visible_box,
         confidence: target.confidence,
         presence: presence.noul,
     })

@@ -13,6 +13,7 @@ final class SessionController: ObservableObject {
     @Published private(set) var metrics = ""
     @Published private(set) var speechLanguageID: String
     @Published private(set) var speechMode: SpeechRecognitionMode
+    @Published private(set) var highlightStyle = HighlightStyle.restored(UserDefaults.standard.string(forKey: "highlightStyle"))
     let speechLanguages: [SpeechLanguage]
     var onRunningChanged: ((Bool) -> Void)?
 
@@ -46,6 +47,7 @@ final class SessionController: ObservableObject {
                                                    preferred: Locale.preferredLanguages,
                                                    available: speechLanguages.map(\.id))
         speechMode = SpeechRecognitionMode.restored(UserDefaults.standard.string(forKey: "speechRecognitionMode"))
+        overlay.style = highlightStyle
         LocalStorage.prepare()
         if let key = LocalStorage.loadKey() { client = JevClient(apiKey: key); hasAPIKey = true }
         rememberObservedApp()
@@ -263,6 +265,13 @@ final class SessionController: ObservableObject {
     }
 
     func openNotes() { NSWorkspace.shared.open(LocalStorage.notesURL) }
+
+    func setHighlightStyle(_ style: HighlightStyle) {
+        highlightStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: "highlightStyle")
+        // Restyle the existing target in place without releasing its latch.
+        overlay.style = style
+    }
 
     private var speechConfiguration: SpeechConfiguration {
         SpeechConfiguration(languageID: speechLanguageID, mode: speechMode)

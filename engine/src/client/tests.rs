@@ -105,18 +105,14 @@ fn presence_and_confidence_gate_the_always_returned_box() {
 }
 
 #[test]
-fn malformed_boxes_probabilities_and_types_are_rejected() {
+fn unusable_box_geometry_never_becomes_a_visible_target() {
     for (field, value) in [("top", 0.9), ("top", -0.1), ("right", 1.1), ("right", 0.3)] {
         let mut answer = guidance_answer(0.99, 0.95);
         answer["answers"]["target"]["box"][field] = json!(value);
-        assert!(parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).is_err());
-    }
-    for answer in [
-        guidance_answer(2.0, 0.9),
-        guidance_answer(0.9, -0.1),
-        json!({}),
-    ] {
-        assert!(parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).is_err());
+        let result = parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).unwrap();
+        assert!(result.r#box.is_none());
+        assert_eq!(result.presence, 0.99);
+        assert_eq!(result.confidence, 0.95);
     }
     assert!(
         !NormalizedBox {
@@ -127,6 +123,46 @@ fn malformed_boxes_probabilities_and_types_are_rejected() {
         }
         .is_valid()
     );
+}
+
+#[test]
+fn absent_or_low_confidence_invalid_boxes_are_ignored_without_error() {
+    for (presence, confidence) in [(0.01, 0.95), (0.99, 0.1), (0.01, 0.1)] {
+        let mut answer = guidance_answer(presence, confidence);
+        answer["answers"]["target"]["box"] = json!({
+            "top": 0.0, "bottom": 0.0, "left": 0.0, "right": 0.0
+        });
+        let result = parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).unwrap();
+        assert!(result.r#box.is_none());
+        assert_eq!(result.presence, presence);
+        assert_eq!(result.confidence, confidence);
+    }
+}
+
+#[test]
+fn malformed_probabilities_and_answer_types_remain_errors() {
+    for answer in [
+        guidance_answer(2.0, 0.9),
+        guidance_answer(0.9, -0.1),
+        json!({}),
+    ] {
+        assert!(parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).is_err());
+    }
+    let mut wrong_type = guidance_answer(0.01, 0.1);
+    wrong_type["answers"]["target"]["type"] = json!("choice");
+    assert!(parse_guidance(&serde_json::to_vec(&wrong_type).unwrap(), 0.65, 0.25).is_err());
+
+    // Even an abstaining Box cannot smuggle an invalid probability through.
+    let mut bad_probability = guidance_answer(0.01, 2.0);
+    bad_probability["answers"]["target"]["box"]["bottom"] = json!(0.0);
+    let error = parse_guidance(&serde_json::to_vec(&bad_probability).unwrap(), 0.65, 0.25)
+        .err()
+        .unwrap();
+    assert!(error.message.contains("probabilities"));
+    let nonfinite = guidance_answer(0.99, 0.95)
+        .to_string()
+        .replace("0.95", "1e400");
+    assert!(parse_guidance(nonfinite.as_bytes(), 0.65, 0.25).is_err());
 }
 
 #[test]
