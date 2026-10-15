@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var setup = SetupCoordinator(languageID: session.speechLanguageID, mode: session.speechMode)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppRelauncher.prepareForExit = { [weak self] in self?.session.stop() }
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "Jev Assist")

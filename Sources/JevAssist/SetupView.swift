@@ -16,6 +16,7 @@ struct SetupView: View {
                 Spacer()
                 Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 13, weight: .medium)) }
                     .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Close setup")
+                    .disabled(setup.isRestarting)
             }
             Text("Three simple steps. We’ll take them one at a time.")
                 .font(.system(size: 15)).foregroundStyle(.secondary)
@@ -50,7 +51,7 @@ struct SetupView: View {
             } label: {
                 HStack(spacing: 10) {
                     if setup.isRequesting { ProgressView().controlSize(.small) }
-                    Text(setup.isRequesting ? "Follow the message from your Mac…" :
+                    Text(setup.isRequesting ? setup.activityLabel :
                          (setup.readiness.isReady ? readyActionTitle : setup.actionTitle))
                         .font(.system(size: 16, weight: .semibold))
                 }
@@ -58,6 +59,12 @@ struct SetupView: View {
             }
             .buttonStyle(.borderedProminent).tint(.teal).controlSize(.large)
             .disabled(setup.isRequesting)
+
+            if setup.canOpenScreenSettings {
+                Button("Open Screen Recording instead") { setup.openScreenSettings() }
+                    .buttonStyle(.link).font(.system(size: 14))
+                    .disabled(setup.isRequesting)
+            }
 
             Text(isHelpSessionActive ? "Your help session is still active. We’ll check setup as you make changes." :
                  "We’re only checking setup. Your microphone and screen are not being recorded.")

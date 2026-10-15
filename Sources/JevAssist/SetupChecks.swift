@@ -43,5 +43,17 @@ enum SetupChecks {
         state.screen = true
         state.accessibility = false
         expect(state.nextStep == .accessibility, "accessibility revocation is reflected after prior completion")
+        var recovery = SetupRecoveryState()
+        expect(recovery.screenAction == .requestPermission, "first setup requests screen permission")
+        recovery.screenWasRequested = true
+        expect(recovery.screenAction == .openSettings, "new request leads to settings before restart")
+        recovery.screenSettingsOpened = true
+        expect(recovery.screenAction == .restart, "return from settings offers restart instead of a settings loop")
+        recovery.restartedThisBuild = true
+        expect(recovery.screenAction == .repairSettings, "a failed restart leads to repair rather than endless restarts")
+        state.screen = false
+        expect(state.nextStep == .screen && !state.isReady, "restart recovery still requires a real screen grant")
+        recovery.restartedThisBuild = false
+        expect(recovery.screenAction == .restart, "a new build can make one fresh restart attempt")
     }
 }

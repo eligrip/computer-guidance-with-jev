@@ -14,6 +14,7 @@ Requires macOS 13 or newer, Swift 5.9+ from Apple's Command Line Tools, and a cu
 git clone https://github.com/eligrip/computer-guidance-with-jev.git
 cd computer-guidance-with-jev
 python3 scripts/setup-typesafe-key.py
+python3 scripts/local-signing.py setup
 ./scripts/build.sh
 ./scripts/run.sh
 ```
@@ -38,7 +39,9 @@ On a development Mac running macOS 14.5, enabling English (US) Dictation changed
 
 **Allow Apple online recognition** is an explicit alternative; audio may then be sent to Apple. The setting is saved only when you click **Save speech settings** or **Apply and retry microphone**. Retrying during a help session preserves the conversation and guidance. The settings also link to microphone and speech permissions.
 
-Local ad-hoc signing is sufficient for this development build. Rebuilding can cause macOS to ask for permissions again. If you have a local signing identity, set `JEV_ASSIST_SIGNING_IDENTITY` when building to use it.
+Before testing permissions on your development Mac, run `python3 scripts/local-signing.py setup` once, then rebuild. This creates a stable local signing certificate in an ignored, owner-only `.local-signing` directory. The helper uses an isolated password-protected keychain, temporarily adds it to the signing search list, and restores that list afterward. It does not change certificate trust or macOS permissions. Future builds reuse this identity so their designated requirement remains stable. Keep this directory between builds; its private material must never be committed or shared.
+
+Switching from an earlier ad-hoc build may require one final permission refresh. Setup offers **Restart Jev Assist** to apply Screen Recording changes. If access is still unavailable after that restart, it explains how to refresh the existing Jev Assist switch instead of repeatedly offering the same restart. Completed permissions always skip ahead automatically. Without a local identity, builds remain ad-hoc and print a warning that permissions may not survive changes. For distribution, use an Apple-issued identity through `JEV_ASSIST_SIGNING_IDENTITY`.
 
 ## Browser context
 

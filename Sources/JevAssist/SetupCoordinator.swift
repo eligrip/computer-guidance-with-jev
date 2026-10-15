@@ -24,6 +24,19 @@ enum SetupStep: String, CaseIterable, Identifiable {
 
 enum SetupPermission: Equatable { case notRequested, allowed, denied, restricted }
 enum VoiceSetupAction: Equatable { case requestPermission, microphoneSettings, speechSettings, dictationSettings, checkAgain, restricted }
+enum ScreenSetupAction: Equatable { case requestPermission, openSettings, restart, repairSettings }
+
+struct SetupRecoveryState: Equatable {
+    var screenWasRequested = false
+    var screenSettingsOpened = false
+    var restartedThisBuild = false
+
+    var screenAction: ScreenSetupAction {
+        if !screenWasRequested { return .requestPermission }
+        if !screenSettingsOpened { return .openSettings }
+        return restartedThisBuild ? .repairSettings : .restart
+    }
+}
 
 /// Pure readiness policy, independently testable without requesting permission,
 /// recording audio, or inspecting a user's screen.
@@ -64,6 +77,8 @@ struct SetupReadiness: Equatable {
 final class SetupCoordinator: ObservableObject {
     @Published private(set) var readiness = SetupReadiness()
     @Published private(set) var isRequesting = false
+    @Published private(set) var isRestarting = false
+    @Published private(set) var activityLabel = "Follow the message from your Mac…"
     @Published private(set) var notice: String?
     private var configuration: SpeechConfiguration
     private var recognizer: SFSpeechRecognizer?
@@ -71,13 +86,26 @@ final class SetupCoordinator: ObservableObject {
     private var requestGeneration = UUID()
     private var requestedScreen: Bool
     private var requestedAccessibility: Bool
+    private var screenSettingsOpened: Bool
 
     init(languageID: String, mode: SpeechRecognitionMode) {
         configuration = SpeechConfiguration(languageID: languageID, mode: mode)
         recognizer = SFSpeechRecognizer(locale: Locale(identifier: languageID))
         requestedScreen = UserDefaults.standard.bool(forKey: "setupRequestedScreen")
         requestedAccessibility = UserDefaults.standard.bool(forKey: "setupRequestedAccessibility")
+        // Legacy setups only remembered that access was requested. Give those
+        // users recovery immediately instead of sending them around the loop.
+        screenSettingsOpened = requestedScreen || UserDefaults.standard.bool(forKey: "setupOpenedScreenSettings")
         // No permission prompts or recording happen during initialization.
+    }
+
+    private var recovery: SetupRecoveryState {
+        SetupRecoveryState(screenWasRequested: requestedScreen, screenSettingsOpened: screenSettingsOpened,
+                           restartedThisBuild: UserDefaults.standard.string(forKey: "setupRestartedBuild") == AppRelauncher.buildToken)
+    }
+
+    var canOpenScreenSettings: Bool {
+        readiness.nextStep == .screen && recovery.screenAction == .restart
     }
 
     func configure(languageID: String, mode: SpeechRecognitionMode) {
@@ -117,12 +145,19 @@ final class SetupCoordinator: ObservableObject {
     var explanation: String {
         switch readiness.nextStep {
         case .screen:
-            return requestedScreen
-                ? "Turn on Jev Assist in Screen Recording. If your Mac asks, choose Quit & Reopen."
-                : "Let Jev Assist see the window you’re using and your Dock so it can show you where to click."
+            switch recovery.screenAction {
+            case .requestPermission:
+                return "Let Jev Assist see the window you’re using and your Dock so it can show you where to click."
+            case .openSettings:
+                return "Turn on Jev Assist in Screen Recording. Then return here."
+            case .restart:
+                return "If the Jev Assist switch is already on, restart the app to apply access. Otherwise, open Screen Recording below and turn it on first."
+            case .repairSettings:
+                return "This copy of Jev Assist still can’t use screen access. In Screen Recording, turn Jev Assist off and back on. If your Mac asks, choose Quit & Reopen."
+            }
         case .accessibility:
             return requestedAccessibility
-                ? "Turn on Jev Assist in Accessibility. Then return here; we’ll check it for you."
+                ? "Turn on Jev Assist in Accessibility. If it is already on, turn it off and back on for this updated app. Then return here."
                 : "Let Jev Assist recognize buttons and controls. You still do every click."
         case .voice:
             switch readiness.voiceAction {
@@ -146,7 +181,12 @@ final class SetupCoordinator: ObservableObject {
 
     var actionTitle: String {
         switch readiness.nextStep {
-        case .screen: return requestedScreen ? "Open Screen Recording" : "Allow screen access"
+        case .screen:
+            switch recovery.screenAction {
+            case .requestPermission: return "Allow screen access"
+            case .openSettings, .repairSettings: return "Open Screen Recording"
+            case .restart: return "Restart Jev Assist"
+            }
         case .accessibility: return requestedAccessibility ? "Open Accessibility" : "Allow Accessibility"
         case .voice:
             switch readiness.voiceAction {
@@ -169,8 +209,10 @@ final class SetupCoordinator: ObservableObject {
         notice = nil
         switch readiness.nextStep {
         case .screen:
-            if requestedScreen { openSettings("com.apple.preference.security?Privacy_ScreenCapture") }
-            else {
+            switch recovery.screenAction {
+            case .openSettings, .repairSettings: openScreenSettings()
+            case .restart: restartApp()
+            case .requestPermission:
                 requestedScreen = true
                 UserDefaults.standard.set(true, forKey: "setupRequestedScreen")
                 _ = CGRequestScreenCaptureAccess()
@@ -197,6 +239,9 @@ final class SetupCoordinator: ObservableObject {
     }
 
     func cancelPendingAction() {
+        // A successful handoff must still close this instance if its window was
+        // dismissed while LaunchServices was starting the replacement.
+        guard !isRestarting else { return }
         requestGeneration = UUID()
         requestTask?.cancel()
         requestTask = nil
@@ -205,6 +250,7 @@ final class SetupCoordinator: ObservableObject {
 
     private func requestVoicePermissions() {
         isRequesting = true
+        activityLabel = "Follow the message from your Mac…"
         let generation = UUID()
         requestGeneration = generation
         requestTask = Task { [weak self] in
@@ -225,6 +271,35 @@ final class SetupCoordinator: ObservableObject {
                 _ = await withCheckedContinuation { continuation in
                     SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
                 }
+            }
+        }
+    }
+
+    func openScreenSettings() {
+        guard !isRequesting else { return }
+        screenSettingsOpened = true
+        UserDefaults.standard.set(true, forKey: "setupOpenedScreenSettings")
+        openSettings("com.apple.preference.security?Privacy_ScreenCapture")
+    }
+
+    private func restartApp() {
+        guard !isRequesting else { return }
+        isRequesting = true
+        isRestarting = true
+        activityLabel = "Reopening Jev Assist…"
+        let previousAttempt = UserDefaults.standard.string(forKey: "setupRestartedBuild")
+        UserDefaults.standard.set(AppRelauncher.buildToken, forKey: "setupRestartedBuild")
+        UserDefaults.standard.set(true, forKey: "setupInProgress")
+        requestTask = Task { [weak self] in
+            guard let self else { return }
+            do { try await AppRelauncher.restart() }
+            catch {
+                if let previousAttempt { UserDefaults.standard.set(previousAttempt, forKey: "setupRestartedBuild") }
+                else { UserDefaults.standard.removeObject(forKey: "setupRestartedBuild") }
+                self.notice = error.localizedDescription
+                self.isRequesting = false
+                self.isRestarting = false
+                self.requestTask = nil
             }
         }
     }

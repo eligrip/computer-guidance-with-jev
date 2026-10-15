@@ -15,8 +15,18 @@ cp "$BIN_DIR/JevAssistBridge" "$APP_DIR/Contents/MacOS/JevAssistBridge"
 cp "$PROJECT_ROOT/engine/target/release/jev-assist-engine" "$APP_DIR/Contents/MacOS/jev-assist-engine"
 cp "$PROJECT_ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 cp "$PROJECT_ROOT/Resources/user_notes.example.md" "$APP_DIR/Contents/Resources/user_notes.example.md"
-/usr/bin/codesign --force --sign "${JEV_ASSIST_SIGNING_IDENTITY:--}" "$APP_DIR/Contents/MacOS/jev-assist-engine"
-/usr/bin/codesign --force --sign "${JEV_ASSIST_SIGNING_IDENTITY:--}" "$APP_DIR/Contents/MacOS/JevAssistBridge"
-/usr/bin/codesign --force --sign "${JEV_ASSIST_SIGNING_IDENTITY:--}" "$APP_DIR"
+if [[ -n "${JEV_ASSIST_SIGNING_IDENTITY:-}" ]]; then
+    SIGNING_ARGS=(--force --sign "$JEV_ASSIST_SIGNING_IDENTITY")
+elif [[ -f "$PROJECT_ROOT/.local-signing/identity" ]]; then
+    python3 "$PROJECT_ROOT/scripts/local-signing.py" sign "$APP_DIR"
+    printf 'Built %s\n' "$APP_DIR"
+    exit 0
+else
+    SIGNING_ARGS=(--force --sign -)
+    printf 'Ad-hoc build: macOS may forget permissions after changes. For local testing, run python3 scripts/local-signing.py setup once.\n' >&2
+fi
+/usr/bin/codesign "${SIGNING_ARGS[@]}" "$APP_DIR/Contents/MacOS/jev-assist-engine"
+/usr/bin/codesign "${SIGNING_ARGS[@]}" "$APP_DIR/Contents/MacOS/JevAssistBridge"
+/usr/bin/codesign "${SIGNING_ARGS[@]}" "$APP_DIR"
 /usr/bin/codesign --verify --deep --strict "$APP_DIR"
 printf 'Built %s\n' "$APP_DIR"
