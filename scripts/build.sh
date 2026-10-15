@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$PROJECT_ROOT"
+mkdir -p "$PROJECT_ROOT/.build/module-cache"
+export CLANG_MODULE_CACHE_PATH="$PROJECT_ROOT/.build/module-cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$PROJECT_ROOT/.build/module-cache"
+cargo build --manifest-path "$PROJECT_ROOT/engine/Cargo.toml" --release --locked
+swift build -c release --disable-sandbox
+BIN_DIR="$(swift build -c release --show-bin-path --disable-sandbox)"
+APP_DIR="$PROJECT_ROOT/dist/JevAssist.app"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+cp "$BIN_DIR/JevAssist" "$APP_DIR/Contents/MacOS/JevAssist"
+cp "$BIN_DIR/JevAssistBridge" "$APP_DIR/Contents/MacOS/JevAssistBridge"
+cp "$PROJECT_ROOT/engine/target/release/jev-assist-engine" "$APP_DIR/Contents/MacOS/jev-assist-engine"
+cp "$PROJECT_ROOT/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "$PROJECT_ROOT/Resources/user_notes.example.md" "$APP_DIR/Contents/Resources/user_notes.example.md"
+/usr/bin/codesign --force --sign "${JEV_ASSIST_SIGNING_IDENTITY:--}" "$APP_DIR/Contents/MacOS/jev-assist-engine"
+/usr/bin/codesign --force --sign "${JEV_ASSIST_SIGNING_IDENTITY:--}" "$APP_DIR/Contents/MacOS/JevAssistBridge"
+/usr/bin/codesign --force --sign "${JEV_ASSIST_SIGNING_IDENTITY:--}" "$APP_DIR"
+/usr/bin/codesign --verify --deep --strict "$APP_DIR"
+printf 'Built %s\n' "$APP_DIR"

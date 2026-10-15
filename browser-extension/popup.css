@@ -1,0 +1,12 @@
+:root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; }
+body { width: 320px; margin: 0; background: light-dark(#f7f6f2, #181b21); color: light-dark(#202c38, #e9eef4); }
+main { padding: 23px; }
+.brand { font-size: 15px; font-weight: 700; color: light-dark(#3a665c, #8bcabb); }
+.brand span { margin-right: 7px; }
+h1 { font-size: 23px; line-height: 1.2; letter-spacing: -.6px; margin: 20px 0 12px; }
+p { margin: 12px 0; }
+.detail { font-size: 12px; opacity: .75; }
+button { width: 100%; padding: 12px; margin-top: 10px; font: inherit; font-weight: 650; border-radius: 9px; border: none; background: #285d52; color: white; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+button:focus-visible { outline: 3px solid #83b8ff; outline-offset: 3px; }
+#status { min-height: 21px; font-size: 12px; }

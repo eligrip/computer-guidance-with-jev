@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jev Assist</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <div class="brand"><span aria-hidden="true">▣</span> Jev Assist</div>
+    <h1>Give Jev the page context.</h1>
+    <p>While sharing, the active Chrome page’s URL, loaded text, and controls are sent to the local Mac app for your help session.</p>
+    <p class="detail">Other tabs and form field values are excluded. Page content can still be private. The Mac app sends shared context to TypeSafe while helping.</p>
+    <button id="toggle" type="button" disabled>Loading…</button>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

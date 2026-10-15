@@ -1,0 +1,326 @@
+use super::*;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    task::JoinHandle,
+};
+
+fn fixture_request(op: &str) -> Request {
+    let input = if op == "guidance" {
+        json!({
+            "transcript": "Sarah sent me a photo. I want to save it.", "goal": null,
+            "notes": "", "browser_context": null, "accessibility_context": null,
+            "image_jpeg_base64": STANDARD.encode([0xff, 0xd8, 0xff, 0xd9])
+        })
+    } else {
+        json!({ "transcript": "Sarah sent me a photo. I want to save it.", "previous_goal": null })
+    };
+    serde_json::from_value(json!({
+        "id": "fixture", "op": op, "api_key": "fake-test-key", "model": "jev-1.14.0",
+        "minimum_presence": 0.65, "minimum_confidence": 0.25, "input": input
+    }))
+    .unwrap()
+}
+
+fn guidance_answer(presence: f64, confidence: f64) -> Value {
+    json!({ "answers": {
+        "target": { "type": "box", "box": { "top": 0.1, "bottom": 0.2, "left": 0.3, "right": 0.4 }, "confidence": confidence },
+        "target_present": { "type": "noul", "noul": presence }
+    }})
+}
+
+async fn fixture_server(
+    status: u16,
+    body: &str,
+    extra_headers: &str,
+) -> (Engine, JoinHandle<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    let response = format!(
+        "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n{body}",
+        body.len()
+    );
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_http_request(&mut stream).await;
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+        request
+    });
+    let mut engine = Engine::new().unwrap();
+    engine.endpoint = endpoint;
+    engine.client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .retry(reqwest::retry::never())
+        .build()
+        .unwrap();
+    (engine, task)
+}
+
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4_096];
+    let mut expected = None;
+    loop {
+        let count = stream.read(&mut buffer).await.unwrap();
+        assert!(count > 0, "Client disconnected before request completion");
+        request.extend_from_slice(&buffer[..count]);
+        if expected.is_none() {
+            if let Some(index) = request.windows(4).position(|value| value == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..index]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                expected = Some(index + 4 + content_length);
+            }
+        }
+        if expected.is_some_and(|length| request.len() >= length) {
+            return request;
+        }
+    }
+}
+
+#[test]
+fn presence_and_confidence_gate_the_always_returned_box() {
+    let low_presence = serde_json::to_vec(&guidance_answer(0.1, 0.95)).unwrap();
+    let result = parse_guidance(&low_presence, 0.65, 0.25).unwrap();
+    assert!(result.r#box.is_none());
+    assert_eq!(result.presence, 0.1);
+    assert_eq!(result.confidence, 0.95);
+    let low_confidence = serde_json::to_vec(&guidance_answer(0.99, 0.1)).unwrap();
+    assert!(
+        parse_guidance(&low_confidence, 0.65, 0.25)
+            .unwrap()
+            .r#box
+            .is_none()
+    );
+    let good = serde_json::to_vec(&guidance_answer(0.99, 0.95)).unwrap();
+    assert!(parse_guidance(&good, 0.65, 0.25).unwrap().r#box.is_some());
+}
+
+#[test]
+fn malformed_boxes_probabilities_and_types_are_rejected() {
+    for (field, value) in [("top", 0.9), ("top", -0.1), ("right", 1.1), ("right", 0.3)] {
+        let mut answer = guidance_answer(0.99, 0.95);
+        answer["answers"]["target"]["box"][field] = json!(value);
+        assert!(parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).is_err());
+    }
+    for answer in [
+        guidance_answer(2.0, 0.9),
+        guidance_answer(0.9, -0.1),
+        json!({}),
+    ] {
+        assert!(parse_guidance(&serde_json::to_vec(&answer).unwrap(), 0.65, 0.25).is_err());
+    }
+    assert!(
+        !NormalizedBox {
+            top: f64::NAN,
+            bottom: 0.2,
+            left: 0.3,
+            right: 0.4
+        }
+        .is_valid()
+    );
+}
+
+#[test]
+fn image_payload_rejects_bad_data_before_network() {
+    assert!(decode_jpeg("invalid base64").is_err());
+    assert!(decode_jpeg(&STANDARD.encode(b"not jpeg")).is_err());
+    assert_eq!(
+        decode_jpeg(&STANDARD.encode([0xff, 0xd8, 0xff])).unwrap(),
+        [0xff, 0xd8, 0xff]
+    );
+}
+
+#[test]
+fn retry_after_seconds_dates_and_error_redaction() {
+    let now = SystemTime::UNIX_EPOCH;
+    assert_eq!(retry_delay("2.5", now), Some(2.5));
+    assert_eq!(retry_delay("nan", now), None);
+    assert_eq!(retry_delay("inf", now), None);
+    assert_eq!(
+        retry_delay("Thu, 01 Jan 1970 00:01:00 GMT", now),
+        Some(60.0)
+    );
+    assert_eq!(
+        retry_delay(
+            "Thu, 01 Jan 1970 00:00:00 GMT",
+            now + Duration::from_secs(10)
+        ),
+        Some(0.0)
+    );
+    assert_eq!(EngineError::http(429, Some(2.0)).status, Some(429));
+}
+
+#[test]
+fn goal_wire_request_preserves_options_and_rejects_generated_values() {
+    let request = fixture_request("goal");
+    let Operation::Goal(input) = &request.operation else {
+        unreachable!()
+    };
+    let candidates = goals::candidates(&input.transcript);
+    let payload = goal_payload(&request.model, input, &candidates);
+    let criteria = payload["questions"]["goal"]["criteria"]
+        .as_object()
+        .unwrap();
+    assert_eq!(criteria.len(), candidates.len() + 2);
+    assert!(criteria.contains_key("none"));
+    assert!(criteria.contains_key("keep_previous"));
+    let good = json!({ "answers": { "goal": { "type": "choice", "choice": candidates[0].id, "confidence": 0.8 }}});
+    assert_eq!(
+        parse_goal(&serde_json::to_vec(&good).unwrap(), &candidates, None).unwrap(),
+        Some(candidates[0].text.clone())
+    );
+    let bad = json!({ "answers": { "goal": { "type": "choice", "choice": "generated text", "confidence": 0.8 }}});
+    assert!(parse_goal(&serde_json::to_vec(&bad).unwrap(), &candidates, None).is_err());
+}
+
+#[tokio::test]
+async fn multipart_wire_uses_json_first_image_second_and_key_only_in_header() {
+    let (engine, server) = fixture_server(200, &guidance_answer(0.99, 0.95).to_string(), "").await;
+    let result = engine.execute(&fixture_request("guidance")).await.unwrap();
+    assert!(matches!(
+        result,
+        ResultValue::Guidance(GuidanceResult { r#box: Some(_), .. })
+    ));
+    let request = server.await.unwrap();
+    let split = request
+        .windows(4)
+        .position(|value| value == b"\r\n\r\n")
+        .unwrap();
+    let headers = String::from_utf8_lossy(&request[..split]).to_lowercase();
+    let body = String::from_utf8_lossy(&request[split + 4..]);
+    assert!(headers.contains("authorization: bearer fake-test-key"));
+    assert!(headers.contains("typesafe-danger-zone-images: true"));
+    assert!(headers.contains("multipart/form-data; boundary="));
+    assert!(!body.contains("fake-test-key"));
+    assert!(body.find("name=\"request\"").unwrap() < body.find("name=\"screen-jpeg\"").unwrap());
+    let json_start = body.find("\r\n\r\n").unwrap() + 4;
+    let json_end = body[json_start..].find("\r\n--").unwrap() + json_start;
+    let payload: Value = serde_json::from_str(&body[json_start..json_end]).unwrap();
+    assert_eq!(payload["model"], "jev-1.14.0");
+    assert_eq!(payload["questions"]["target"]["type"], "box");
+    assert!(payload["questions"]["target"].get("criteria").is_none());
+    assert_eq!(payload["questions"]["target_present"]["type"], "noul");
+    let image_id = payload["state"]["screen"].as_str().unwrap();
+    assert_eq!(payload["assets"][image_id]["part"], "screen-jpeg");
+}
+
+#[tokio::test]
+async fn http_rate_limit_reaches_caller_without_echoed_error_body() {
+    let (engine, server) =
+        fixture_server(429, "private speech and secret-key", "Retry-After: 2\r\n").await;
+    let error = engine
+        .execute(&fixture_request("goal"))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.status, Some(429));
+    assert_eq!(error.retry_after, Some(2.0));
+    assert!(!error.message.contains("private speech"));
+    assert!(!error.message.contains("secret-key"));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn http_goal_response_copies_exact_unicode_candidate() {
+    let (engine, server) = fixture_server(
+        200,
+        r#"{"answers":{"goal":{"type":"choice","choice":"source_0","confidence":0.9}}}"#,
+        "",
+    )
+    .await;
+    let mut request = fixture_request("goal");
+    let Operation::Goal(input) = &mut request.operation else {
+        unreachable!()
+    };
+    input.transcript = "I want  to save Zoë’s 照片".to_owned();
+    let result = engine.execute(&request).await.unwrap();
+    assert_eq!(
+        result,
+        ResultValue::Goal {
+            goal: Some("I want  to save Zoë’s 照片".to_owned())
+        }
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_config_is_rejected_without_a_request() {
+    let engine = Engine::new().unwrap();
+    let mut request = fixture_request("goal");
+    request.minimum_presence = f64::NAN;
+    assert!(engine.execute(&request).await.is_err());
+    request.minimum_presence = 0.65;
+    request.api_key.clear();
+    assert!(engine.execute(&request).await.is_err());
+}
+
+#[tokio::test]
+async fn protocol_runs_two_requests_at_a_time_and_delivers_all_ids() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::BufReader;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut engine = Engine::new().unwrap();
+        engine.endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        engine.client = Client::builder().no_proxy().build().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let observed = maximum.clone();
+        let server = tokio::spawn(async move {
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let active = active.clone();
+                let maximum = maximum.clone();
+                tasks.spawn(async move {
+                    let _request = read_http_request(&mut stream).await;
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    let body = r#"{"answers":{"goal":{"type":"choice","choice":"source_0","confidence":0.9}}}"#;
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.shutdown().await.unwrap();
+                });
+            }
+            while let Some(result) = tasks.join_next().await { result.unwrap(); }
+        });
+        let (native, backend) = tokio::io::duplex(16_384);
+        let (read, write) = tokio::io::split(backend);
+        let running = tokio::spawn(crate::protocol::serve(BufReader::new(read), write, engine));
+        let (mut output, mut input) = tokio::io::split(native);
+        for index in 0..6 {
+            let mut line = serde_json::to_vec(&json!({
+                "id": format!("request-{index}"), "op": "goal", "api_key": "fake", "model": "jev-1.14.0",
+                "minimum_presence": 0.65, "minimum_confidence": 0.25,
+                "input": { "transcript": "Save this photo", "previous_goal": null }
+            })).unwrap();
+            line.push(b'\n');
+            input.write_all(&line).await.unwrap();
+        }
+        input.shutdown().await.unwrap();
+        let mut responses = String::new();
+        output.read_to_string(&mut responses).await.unwrap();
+        running.await.unwrap().unwrap();
+        server.await.unwrap();
+        let values: Vec<Value> = responses.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(values.len(), 6);
+        for index in 0..6 {
+            assert!(values.iter().any(|value| value["id"] == format!("request-{index}") && value["ok"] == true));
+        }
+        assert_eq!(observed.load(Ordering::SeqCst), 2, "Engine must run concurrently but never exceed two calls");
+    }).await.expect("Bounded concurrency test timed out");
+}

@@ -1,0 +1,36 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Rust engine tests
+        run: cargo +stable test --manifest-path engine/Cargo.toml --locked
+      - name: Core XCTest suite
+        run: swift test --disable-sandbox
+      - name: Command Line Tools regression harness
+        run: bash scripts/test-core.sh
+      - name: Browser context behavior
+        run: node --test Tests/browser-extension.test.mjs
+      - name: Build signed app and bridge
+        run: ./scripts/build.sh
+      - name: Native coordinate and screen tests
+        run: dist/JevAssist.app/Contents/MacOS/JevAssist --self-test
+      - name: Native bridge protocol
+        env:
+          JEV_ASSIST_BRIDGE_TEST_BINARY: ${{ github.workspace }}/dist/JevAssist.app/Contents/MacOS/JevAssistBridge
+        run: python3 Tests/browser-bridge.test.py -v

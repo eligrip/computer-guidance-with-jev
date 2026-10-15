@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Jev Assist — Browser Context",
+  "version": "0.1.0",
+  "description": "Share the active page with your local Jev Assist help session.",
+  "minimum_chrome_version": "116",
+  "permissions": ["nativeMessaging", "storage", "scripting", "tabs"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_popup": "popup.html", "default_title": "Jev Assist"},
+  "incognito": "not_allowed"
+}

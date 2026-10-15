@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+.DS_Store
+.build/
+engine/target/
+.swiftpm/
+dist/
+artifacts/
+user_notes.md
+*.log
+*.xcuserstate
