@@ -72,6 +72,7 @@ private struct SessionView: View {
     @State private var draft = ""
     @State private var key = ""
     @State private var showingSettings = false
+    @State private var showingSpeechSettings = false
 
     var body: some View {
         ScrollView {
@@ -104,7 +105,7 @@ private struct SessionView: View {
             .controlSize(.large)
 
             if !session.isRunning {
-                Text("During a session, the active window and your words are sent to Jev. Speech recognition stays on this Mac. You do every click.")
+                Text("During a session, the active window and your words are sent to Jev. \(session.speechPrivacyDescription) You do every click.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -115,7 +116,10 @@ private struct SessionView: View {
                         .font(.system(size: 14)).foregroundStyle(session.transcript.isEmpty ? .secondary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                 }.frame(height: 85)
-                Text(session.speechStatus).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(3)
+                Text(session.speechStatus).font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Speech settings") { showingSpeechSettings = true }
+                    .buttonStyle(.link).font(.system(size: 12))
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -150,6 +154,7 @@ private struct SessionView: View {
                         Button("Save") { session.saveAPIKey(key); key = "" }.disabled(key.isEmpty)
                     }
                     HStack {
+                        Button("Speech settings") { showingSpeechSettings = true }
                         Button("Screen access") { session.openScreenPermission() }
                         Button("Accessibility") { session.requestAccessibility() }
                         Spacer()
@@ -160,6 +165,7 @@ private struct SessionView: View {
         }
         .padding(24).frame(width: 440)
         }.frame(width: 440, height: 640)
+        .sheet(isPresented: $showingSpeechSettings) { SpeechSettingsView(session: session) }
     }
 
     private func sectionLabel(_ label: String) -> some View {
@@ -171,5 +177,69 @@ private struct SessionView: View {
         guard !text.isEmpty else { return }
         session.addTypedText(text)
         draft = ""
+    }
+}
+
+@MainActor
+private struct SpeechSettingsView: View {
+    @ObservedObject var session: SessionController
+    @Environment(\.dismiss) private var dismiss
+    @State private var languageID: String
+    @State private var mode: SpeechRecognitionMode
+    @State private var availability = ""
+
+    init(session: SessionController) {
+        self.session = session
+        _languageID = State(initialValue: session.speechLanguageID)
+        _mode = State(initialValue: session.speechMode)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Speech settings").font(.title2.bold())
+            Picker("Spoken language", selection: $languageID) {
+                ForEach(session.speechLanguages) { language in
+                    Text(language.name).tag(language.id)
+                }
+            }
+            .onChange(of: languageID) { _ in checkAvailability() }
+            Picker("Recognition", selection: $mode) {
+                ForEach(SpeechRecognitionMode.allCases) { option in Text(option.title).tag(option) }
+            }
+            Text(mode == .onDeviceOnly
+                 ? "Audio stays on this Mac. Apple’s on-device speech model must be available for your selected language."
+                 : "Apple chooses local or online recognition. Audio may be sent to Apple for transcription. During help sessions, the resulting text is sent to Jev.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(availability).font(.callout).fixedSize(horizontal: false, vertical: true)
+                Button("Check availability again", action: checkAvailability).buttonStyle(.link)
+            }
+            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            HStack {
+                Button("Microphone permission") { session.openMicrophonePermission() }
+                Button("Speech permission") { session.openSpeechPermission() }
+            }
+            Button("Open macOS Dictation settings") { session.openDictationSettings() }
+            Text("For local speech, turn on Dictation in macOS Keyboard settings and select the same language. Allow time for Apple’s speech model to download, then check availability again here.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Changes apply when you save. If a help session is active, only its microphone restarts; your conversation and guidance continue.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(session.isRunning ? "Apply and retry microphone" : "Save speech settings") {
+                    session.applySpeechSettings(languageID: languageID, mode: mode)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24).frame(width: 440)
+        .onAppear(perform: checkAvailability)
+    }
+
+    private func checkAvailability() {
+        availability = SpeechConfiguration(languageID: languageID, mode: mode).availabilityDescription()
     }
 }

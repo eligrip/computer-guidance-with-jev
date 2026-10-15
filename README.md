@@ -8,7 +8,7 @@ There is no required goal-setting step or scripted task flow. Jev interprets you
 
 ## Run on your Mac
 
-Requires macOS 13 or newer, Swift 5.9+ from Apple's Command Line Tools, and a current stable Rust toolchain (`cargo`). The native shell has no third-party Swift dependencies; the Rust engine's dependencies are pinned in `engine/Cargo.lock`. Local speech recognition also requires support for your current language and device; typed input is available when it is unavailable.
+Requires macOS 13 or newer, Swift 5.9+ from Apple's Command Line Tools, and a current stable Rust toolchain (`cargo`). The native shell has no third-party Swift dependencies; the Rust engine's dependencies are pinned in `engine/Cargo.lock`. Speech settings let you choose a language and either on-device-only recognition or opt into Apple's online recognition. Typed input is also available.
 
 ```sh
 git clone https://github.com/eligrip/computer-guidance-with-jev.git
@@ -27,6 +27,16 @@ The setup helper reads the API key without echoing it and writes an ignored `.en
 5. Talk naturally. The app returns focus to your previous app and draws a click-through highlight.
 
 You can also type a thought into the panel. The menu-bar icon opens session controls; **Stop help session** ends capture and transcription and removes the box.
+
+### Speech setup and recovery
+
+Click **Speech settings** beneath the transcript to choose your spoken language and recognition mode. **On-device only** is the default. Apple can report its recognition service as available even when its on-device model is unavailable to this app. That is a language/model availability check, not a claim that your Mac cannot transcribe speech.
+
+If the local model is unavailable, open **macOS Dictation settings**, enable Dictation, and select the same language under Keyboard → Dictation. Allow time for Apple to prepare the language assets, then use **Check availability again** and **Apply and retry microphone**. The app checks the actual speech API capability; it does not assume enabling Dictation guarantees that the assets are ready.
+
+On a development Mac running macOS 14.5, enabling English (US) Dictation changed `supportsOnDeviceRecognition` from false to true and made the synthetic local transcription check pass. See [Apple’s Dictation setup instructions](https://support.apple.com/guide/mac-help/mh40584/mac).
+
+**Allow Apple online recognition** is an explicit alternative; audio may then be sent to Apple. The setting is saved only when you click **Save speech settings** or **Apply and retry microphone**. Retrying during a help session preserves the conversation and guidance. The settings also link to microphone and speech permissions.
 
 Local ad-hoc signing is sufficient for this development build. Rebuilding can cause macOS to ask for permissions again. If you have a local signing identity, set `JEV_ASSIST_SIGNING_IDENTITY` when building to use it.
 
@@ -50,7 +60,7 @@ Add preferred apps, recurring tasks, or vocabulary such as what you mean by “m
 
 A Rust engine handles Jev requests, verbatim goal selection, and answer validation. A thin Swift shell handles macOS speech, screen capture, permissions, and the overlay. They communicate over private process pipes; there is no local HTTP server. The engine reuses its HTTP client and handles goal and guidance requests concurrently.
 
-- **Speech:** Apple's on-device speech recognizer streams partial transcripts. Revisions replace provisional words, rather than duplicating them.
+- **Speech:** Apple's speech recognizer streams partial transcripts in your selected language. On-device-only mode keeps audio local; online recognition is an explicit alternative. Revisions replace provisional words, rather than duplicating them.
 - **Observation:** the app captures the active external window and compares compact image samples to detect meaningful changes. Its own highlight is excluded from capture.
 - **Guidance:** `jev-1.14.0` receives recent speech, the goal anchor, notes, current screenshot, and available browser/accessibility context. A Box question locates the next useful target; a Noul question checks whether a useful target is visible.
 - **Goal anchor:** a separate, intermittent Choice request selects an exact passage from the transcript, keeps the previous anchor, or clears it. The app never asks Jev to generate goal text.
@@ -67,7 +77,7 @@ Native self-tests check padding, image limits, coordinate scaling, and a display
 
 ## Data boundaries
 
-During a help session, the current external window image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac. Screen images and transcripts are not written to logs or saved as recordings. The optional extension writes only its latest context to a local file with restricted permissions.
+During a help session, the current external window image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac in the default on-device-only mode. If you explicitly allow Apple online recognition, audio may be sent to Apple for transcription; audio is never sent to TypeSafe. Screen images and transcripts are not written to logs or saved as recordings. The optional extension writes only its latest context to a local file with restricted permissions.
 
 The app never clicks, types, scrolls, or runs commands on your behalf. Page content is treated as evidence, not executable instructions. A browser page may contain sensitive text, so only start sharing a page you intend to use with the assistant.
 
@@ -83,6 +93,8 @@ JEV_ASSIST_BRIDGE_TEST_BINARY="$PWD/dist/JevAssist.app/Contents/MacOS/JevAssistB
 ```
 
 The tests cover highlight persistence, stale responses, session boundaries, exact goal selection, API payloads, malformed output, Rust process reuse, cancellation, and restart. Native checks cover image preparation and screen coordinates. Browser bridge tests use temporary directories and synthetic messages. With full Xcode installed, `swift test --disable-sandbox` also runs the XCTest suite; Command Line Tools alone may lack XCTest. GitHub Actions runs the full suite on macOS.
+
+To verify an installed English (US) speech model on your Mac, run `swift scripts/check-local-speech.swift`. It synthesizes a fixed sentence into a temporary file and transcribes it with on-device recognition required. It never opens the microphone, sends a Jev request, or opts into online transcription. Run it outside restrictive process sandboxes so it can reach Apple’s speech service; it is intentionally separate from CI because local speech assets must already be installed.
 
 An optional live check sends three synthetic requests, without capturing your screen or reading personal notes:
 

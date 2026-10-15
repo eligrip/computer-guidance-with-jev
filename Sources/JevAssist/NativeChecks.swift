@@ -81,6 +81,20 @@ enum NativeChecks {
             expect(abs(before.redComponent - after.redComponent) < 0.08
                    && abs(before.blueComponent - after.blueComponent) < 0.08, "JPEG preserves image orientation at row \(y)")
         }
+        let languages = ["en-US", "en-GB", "fr-FR", "zh-Hant-TW", "zh-Hans-CN"]
+        expect(SpeechLanguage.resolve(saved: "en_GB", preferred: ["fr-FR"], available: languages) == "en-GB", "saved speech language overrides system preference")
+        expect(SpeechLanguage.resolve(saved: "unsupported", preferred: ["fr-FR"], available: languages) == "fr-FR", "unsupported saved language falls back to preferred speech language")
+        expect(SpeechLanguage.resolve(saved: nil, preferred: ["en-AU"], available: languages).hasPrefix("en-"), "speech language matches a supported regional variant")
+        expect(SpeechLanguage.resolve(saved: nil, preferred: ["zh-Hant-HK"], available: languages) == "zh-Hant-TW", "speech language preserves the requested script")
+        expect(SpeechRecognitionMode.restored(nil) == .onDeviceOnly && SpeechRecognitionMode.restored("invalid") == .onDeviceOnly, "online audio never becomes the implicit default")
+        expect(SpeechRecognitionMode.restored("appleAutomatic") == .appleAutomatic, "explicit online recognition choice persists")
+        let localSpeech = SpeechConfiguration(languageID: "en-US", mode: .onDeviceOnly)
+        let automaticSpeech = SpeechConfiguration(languageID: "en-US", mode: .appleAutomatic)
+        expect(localSpeech.requiresOnDeviceRecognition && !automaticSpeech.requiresOnDeviceRecognition, "recognition request honors chosen audio mode")
+        expect(localSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: true) != nil, "local-only mode remains local when assets are missing")
+        expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: true) == nil, "available Apple recognition is usable without local assets after opt-in")
+        expect(automaticSpeech.blocker(recognizerExists: false, onDeviceSupported: false, serviceAvailable: true) != nil, "unsupported speech language is reported separately")
+        expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: false) != nil, "service outage is reported separately from local asset availability")
         print("Native checks passed: \(checks)")
     }
 }

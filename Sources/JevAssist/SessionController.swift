@@ -11,6 +11,9 @@ final class SessionController: ObservableObject {
     @Published private(set) var speechStatus = "Voice starts with your help session"
     @Published private(set) var hasAPIKey = false
     @Published private(set) var metrics = ""
+    @Published private(set) var speechLanguageID: String
+    @Published private(set) var speechMode: SpeechRecognitionMode
+    let speechLanguages: [SpeechLanguage]
     var onRunningChanged: ((Bool) -> Void)?
 
     private let speech = SpeechTranscriber()
@@ -38,6 +41,11 @@ final class SessionController: ObservableObject {
     private var observingUnavailable = false
 
     init() {
+        speechLanguages = SpeechLanguage.available
+        speechLanguageID = SpeechLanguage.resolve(saved: UserDefaults.standard.string(forKey: "speechLanguageID"),
+                                                   preferred: Locale.preferredLanguages,
+                                                   available: speechLanguages.map(\.id))
+        speechMode = SpeechRecognitionMode.restored(UserDefaults.standard.string(forKey: "speechRecognitionMode"))
         LocalStorage.prepare()
         if let key = LocalStorage.loadKey() { client = JevClient(apiKey: key); hasAPIKey = true }
         rememberObservedApp()
@@ -87,7 +95,10 @@ final class SessionController: ObservableObject {
                 try? await Task.sleep(nanoseconds: 160_000_000)
             }
         }
-        speechTask = Task { [weak self] in await self?.speech.start() }
+        speechTask = Task { [weak self] in
+            guard let self, !Task.isCancelled, self.isRunning, self.sessionID == startedSession else { return }
+            await self.speech.start(configuration: self.speechConfiguration)
+        }
     }
 
     func stop() {
@@ -252,6 +263,50 @@ final class SessionController: ObservableObject {
     }
 
     func openNotes() { NSWorkspace.shared.open(LocalStorage.notesURL) }
+
+    private var speechConfiguration: SpeechConfiguration {
+        SpeechConfiguration(languageID: speechLanguageID, mode: speechMode)
+    }
+
+    var speechPrivacyDescription: String {
+        speechMode == .onDeviceOnly ? "Speech recognition stays on this Mac." : "Speech recognition may send audio to Apple."
+    }
+
+    func applySpeechSettings(languageID: String, mode: SpeechRecognitionMode) {
+        speechLanguageID = SpeechLanguage.resolve(saved: languageID, preferred: Locale.preferredLanguages,
+                                                  available: speechLanguages.map(\.id))
+        speechMode = mode
+        UserDefaults.standard.set(speechLanguageID, forKey: "speechLanguageID")
+        UserDefaults.standard.set(mode.rawValue, forKey: "speechRecognitionMode")
+        guard isRunning else {
+            speechStatus = "Speech settings saved · start a help session to listen"
+            return
+        }
+        // Only the microphone restarts. Goal, screen generation, and held box
+        // belong to the ongoing help session and are left intact.
+        speechTask?.cancel()
+        let currentSession = sessionID
+        speechTask = Task { [weak self] in
+            guard let self, !Task.isCancelled, self.isRunning, self.sessionID == currentSession else { return }
+            await self.speech.start(configuration: self.speechConfiguration, preservingTranscript: true)
+        }
+    }
+
+    func openSpeechPermission() {
+        openSystemSettings("com.apple.preference.security?Privacy_SpeechRecognition")
+    }
+
+    func openMicrophonePermission() {
+        openSystemSettings("com.apple.preference.security?Privacy_Microphone")
+    }
+
+    func openDictationSettings() {
+        openSystemSettings("com.apple.preference.keyboard")
+    }
+
+    private func openSystemSettings(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:\(pane)") { NSWorkspace.shared.open(url) }
+    }
 
     func openScreenPermission() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
