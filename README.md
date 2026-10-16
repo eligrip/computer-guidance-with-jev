@@ -29,7 +29,7 @@ You can also type a thought into the panel. The menu-bar icon opens session cont
 
 **Highlight style** offers three native vector previews: Soft outline (default), Corner guides, and Underline. A style change redraws the current target without moving it or resetting the highlight latch.
 
-**Hearing you** shows a scrollable conversation, follows new speech automatically, and expands with **More**. Turn off **Follow live** to review earlier words. The app retains up to 24,000 characters of recent conversation for Jev. **Keeping in mind** follows the latest task expressed in your own words, including a change of task without an explicit cancellation.
+**Hearing you** shows the current request and follow-up speech, starting at the exact passage Jev selected. When you move to another task, earlier words move into a collapsed **Earlier conversation** section. Before Jev has selected a request, the panel shows a recent excerpt. The app still retains up to 24,000 characters of conversation; guidance receives the current request and earlier conversation in separate fields so old instructions do not compete with a new task. **Keeping in mind** follows the latest task expressed in your own words, including a change of task without an explicit cancellation.
 
 **Settings → Guidance pace** defaults to **Fast**: two target requests can run concurrently, with new dispatches at least 100 ms apart. **Balanced** uses one target request and a 250 ms minimum interval. Both keep checking after a highlight appears; those checks cannot replace a box on an unchanged screen. The panel reports completed target/goal calls, recent calls per second, and latency.
 

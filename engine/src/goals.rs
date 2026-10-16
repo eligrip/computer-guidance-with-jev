@@ -9,7 +9,7 @@ static SENTENCES: LazyLock<Regex> =
 // Speech recognizers do not always add punctuation before a change of mind.
 // These are candidate boundaries only; Jev decides whether a span is an intent.
 static CLAUSE_STARTS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:actually|instead|now|but|never\s+mind|forget\s+(?:about\s+)?that)\b|\b(?:(?:i|we)\s+(?:want|need|would\s+like|would\s+rather)|(?:i|we)['’]d\s+(?:like|rather)|(?:can|could|would)\s+you\s+(?:help|show)|(?:can|could)\s+(?:i|we)|help\s+me|let['’]s)\b").unwrap()
+    Regex::new(r"(?i)\b(?:actually|instead|now|but|never\s+mind|forget\s+(?:about\s+)?that)\b|\b(?:(?:i|we)\s+(?:want|need|would\s+like|would\s+rather|am\s+trying|are\s+trying|am\s+looking|are\s+looking)|(?:i|we)['’]d\s+(?:like|rather)|(?:can|could|would|will)\s+you|(?:can|could)\s+(?:i|we)|(?:help|show|tell|find|give)\s+me|(?:what|where|which|how|when|who)\s+(?:is|are|do|does|can|could|should|would|will)|let['’]s)\b").unwrap()
 });
 static TRANSITION_ONLY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -17,6 +17,10 @@ static TRANSITION_ONLY: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+static REQUEST_PREFIX_ONLY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:(?:actually|instead|now|but)[,\s]*)?(?:(?:i|we)(?:\s+(?:want|need|would\s+like|would\s+rather)|['’]d\s+(?:like|rather))\s+(?:you\s+)?(?:to\s+)?|(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:help|show|tell)\s+me\s+|(?:how|where|what|which)\s+)$").unwrap()
+});
+static WORDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\S+").unwrap());
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
@@ -38,10 +42,23 @@ pub fn candidates(transcript: &str) -> Vec<Candidate> {
             let previous = *starts.last().unwrap();
             // Keep "actually I need ..." together instead of offering the
             // non-intent fragment "actually" as a separate goal.
-            if start > previous && !TRANSITION_ONLY.is_match(&transcript[previous..start]) {
+            if start > previous
+                && !TRANSITION_ONLY.is_match(&transcript[previous..start])
+                && !REQUEST_PREFIX_ONLY.is_match(&transcript[previous..start])
+            {
                 starts.push(start);
             }
         }
+        // A recognizer may run two repetitions together with no punctuation
+        // or first-person prefix: "find volunteer roles find volunteer roles".
+        // Whole repeated request phrases provide boundaries, never token windows.
+        starts.extend(
+            repeated_request_starts(sentence.as_str())
+                .into_iter()
+                .map(|start| sentence.start() + start),
+        );
+        starts.sort_unstable();
+        starts.dedup();
         for (index, start) in starts.iter().copied().enumerate() {
             let end = starts.get(index + 1).copied().unwrap_or(sentence.end());
             let source = &transcript[start..end];
@@ -69,13 +86,88 @@ pub fn candidates(transcript: &str) -> Vec<Candidate> {
         .collect()
 }
 
-/// Evidence of new words is separate from the saved anchor. If the anchor has
-/// rolled out of the speech window, the model still gets the recent clauses.
-pub fn speech_after_previous<'a>(transcript: &'a str, previous: Option<&str>) -> Option<&'a str> {
-    let previous = previous.filter(|value| !value.is_empty())?;
-    transcript
-        .rfind(previous)
-        .map(|start| transcript[start + previous.len()..].trim())
+fn repeated_request_starts(text: &str) -> Vec<usize> {
+    let words: Vec<_> = WORDS.find_iter(text).collect();
+    let normalized: Vec<_> = words
+        .iter()
+        .map(|word| {
+            word.as_str()
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .collect();
+    let mut starts = Vec::new();
+    let mut covered_until = 0;
+    for index in 0..words.len() {
+        if index < covered_until {
+            continue;
+        }
+        if !matches!(
+            normalized[index].as_str(),
+            "find"
+                | "show"
+                | "search"
+                | "open"
+                | "help"
+                | "tell"
+                | "where"
+                | "what"
+                | "how"
+                | "which"
+                | "can"
+                | "could"
+                | "would"
+                | "please"
+                | "i"
+                | "we"
+                | "give"
+                | "locate"
+                | "download"
+                | "save"
+                | "join"
+        ) {
+            continue;
+        }
+        for length in 3..=40.min((words.len() - index) / 2) {
+            if normalized[index..index + length] == normalized[index + length..index + length * 2] {
+                starts.push(words[index].start());
+                let mut next = index + length;
+                while next + length <= words.len()
+                    && normalized[index..index + length] == normalized[next..next + length]
+                {
+                    starts.push(words[next].start());
+                    next += length;
+                }
+                covered_until = next;
+                break;
+            }
+        }
+    }
+    starts
+}
+
+pub struct SpeechContext<'a> {
+    pub earlier_conversation: &'a str,
+    pub current_user_request: &'a str,
+    pub latest_spoken_clause: &'a str,
+}
+
+/// The two conversation fields form an exact partition, so history is present
+/// once and cannot masquerade as equally recent instructions. The latest clause
+/// is a small focus signal, not a generated summary or replacement for context.
+pub fn speech_context<'a>(transcript: &'a str, selected_goal: Option<&str>) -> SpeechContext<'a> {
+    let candidates = candidates(transcript);
+    let latest = candidates.first();
+    let start = selected_goal
+        .filter(|goal| !goal.is_empty())
+        .and_then(|goal| transcript.rfind(goal))
+        .unwrap_or_else(|| latest.map_or(transcript.len(), |span| span.source_start));
+    SpeechContext {
+        earlier_conversation: &transcript[..start],
+        current_user_request: &transcript[start..],
+        latest_spoken_clause: latest
+            .map_or("", |span| &transcript[span.source_start..span.source_end]),
+    }
 }
 
 pub fn resolve(
@@ -170,8 +262,8 @@ mod tests {
                 .all(|value| !(value.text.contains("attachment") && value.text.contains("Zoom")))
         );
         assert_eq!(
-            speech_after_previous(source, Some("I want to find Jane’s attachment.")),
-            Some("I want to join the Zoom call")
+            speech_context(source, Some("I want to find Jane’s attachment.")).latest_spoken_clause,
+            "I want to join the Zoom call"
         );
         assert!(
             values
@@ -205,8 +297,8 @@ mod tests {
                 .any(|value| value.text == "which microphone is selected")
         );
         assert_eq!(
-            speech_after_previous(&source, Some("missing old task")),
-            None
+            speech_context(&source, Some("missing old task")).current_user_request,
+            recent
         );
     }
 
@@ -220,10 +312,13 @@ mod tests {
             source.rfind("Save the photo.").unwrap()
         );
         assert_eq!(
-            speech_after_previous(source, Some("Save the photo.")),
-            Some("")
+            speech_context(source, Some("Save the photo.")).current_user_request,
+            "Save the photo."
         );
-        assert_eq!(speech_after_previous(source, Some("")), None);
+        assert_eq!(
+            speech_context(source, Some("")).current_user_request,
+            "Save the photo."
+        );
     }
 
     #[test]
@@ -237,5 +332,79 @@ mod tests {
             assert_eq!(values.len(), 1);
             assert_eq!(values[0].text, source);
         }
+    }
+
+    #[test]
+    fn repeated_unpunctuated_request_excludes_old_conditional_instructions() {
+        let old = "If the festival banner is cropped open the branding editor and adjust its heading before choosing the blue version";
+        for request in [
+            "can you show me the volunteer roles",
+            "find available volunteer roles",
+            "show me Zoë’s  volunteer roles",
+        ] {
+            let source = format!("{old} {request} {request} {request}");
+            let values = candidates(&source);
+            assert_eq!(values[0].text, request);
+            assert_eq!(values[0].source_start, source.rfind(request).unwrap());
+            assert!(
+                values
+                    .iter()
+                    .all(|value| &source[value.source_start..value.source_end] == value.text)
+            );
+            assert!(
+                !values
+                    .iter()
+                    .any(|value| value.text.contains("banner") && value.text.contains("volunteer"))
+            );
+            assert!(!values.iter().any(|value| value.text == "can you"));
+        }
+    }
+
+    #[test]
+    fn current_request_uses_last_exact_anchor_and_preserves_background() {
+        let goal = "Find Zoë’s volunteer roles.";
+        let source =
+            format!("{goal} Earlier discussion of branding. {goal} Which one fits Saturday?");
+        let context = speech_context(&source, Some(goal));
+        assert_eq!(
+            context.current_user_request,
+            format!("{goal} Which one fits Saturday?")
+        );
+        assert_eq!(context.latest_spoken_clause, "Which one fits Saturday?");
+        assert_eq!(
+            format!(
+                "{}{}",
+                context.earlier_conversation, context.current_user_request
+            ),
+            source
+        );
+        assert!(context.earlier_conversation.contains("branding"));
+        assert!(!context.current_user_request.contains("branding"));
+    }
+
+    #[test]
+    fn no_matching_anchor_focuses_latest_clause_without_losing_history() {
+        let source = "Adjust the banner. Can you tell me which volunteer roles are available?";
+        for goal in [
+            None,
+            Some(""),
+            Some("a corrected speech fragment no longer present"),
+        ] {
+            let context = speech_context(source, goal);
+            assert_eq!(
+                context.current_user_request,
+                "Can you tell me which volunteer roles are available?"
+            );
+            assert_eq!(
+                format!(
+                    "{}{}",
+                    context.earlier_conversation, context.current_user_request
+                ),
+                source
+            );
+        }
+        let blank = speech_context(" \n ", None);
+        assert_eq!(blank.current_user_request, "");
+        assert_eq!(blank.earlier_conversation, " \n ");
     }
 }

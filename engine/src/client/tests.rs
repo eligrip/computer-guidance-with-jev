@@ -36,6 +36,77 @@ fn goal_answer(choice: &str, changed: f64) -> Value {
     }})
 }
 
+#[test]
+fn guidance_partitions_current_request_from_obsolete_history() {
+    let mut request = fixture_request("guidance");
+    let Operation::Guidance(input) = &mut request.operation else {
+        unreachable!()
+    };
+    let goal = "show me the volunteer roles";
+    input.transcript = format!(
+        "If the banner looks clipped open branding and change the heading {goal} {goal} which ones are on Saturday"
+    );
+    input.goal = Some(goal.to_owned());
+    let payload = guidance_payload(&request.model, input, "synthetic-image");
+    let state = &payload["state"];
+    assert_eq!(
+        state["current_user_request"],
+        format!("{goal} which ones are on Saturday")
+    );
+    assert!(
+        state["earlier_conversation"]
+            .as_str()
+            .unwrap()
+            .contains("branding")
+    );
+    assert!(
+        !state["current_user_request"]
+            .as_str()
+            .unwrap()
+            .contains("branding")
+    );
+    assert_eq!(
+        format!(
+            "{}{}",
+            state["earlier_conversation"].as_str().unwrap(),
+            state["current_user_request"].as_str().unwrap()
+        ),
+        input.transcript
+    );
+    assert!(state.get("recent_user_speech").is_none());
+    assert_eq!(state["goal_anchor_from_user_speech"], goal);
+}
+
+#[test]
+fn goal_request_exposes_narrow_latest_clause_to_repair_a_mixed_saved_goal() {
+    let mut request = fixture_request("goal");
+    let Operation::Goal(input) = &mut request.operation else {
+        unreachable!()
+    };
+    let latest = "can you show me the volunteer roles";
+    input.transcript = format!(
+        "If the banner looks clipped open branding and change the heading {latest} {latest}"
+    );
+    input.previous_goal = Some(input.transcript.clone());
+    let candidates = goals::candidates(&input.transcript);
+    let payload = goal_payload(&request.model, input, &candidates);
+    assert_eq!(payload["state"]["latest_spoken_clause"], latest);
+    assert_eq!(
+        payload["questions"]["goal"]["criteria"]["source_0"]["verbatim_user_words"],
+        latest
+    );
+    assert_eq!(
+        parse_goal(
+            &serde_json::to_vec(&goal_answer("source_0", 0.95)).unwrap(),
+            &candidates,
+            input.previous_goal.as_deref()
+        )
+        .unwrap()
+        .as_deref(),
+        Some(latest)
+    );
+}
+
 async fn fixture_server(
     status: u16,
     body: &str,

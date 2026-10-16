@@ -21,6 +21,10 @@ final class SessionController: ObservableObject {
     let speechLanguages: [SpeechLanguage]
     var onRunningChanged: ((Bool) -> Void)?
 
+    var conversationFocus: ConversationFocus {
+        ConversationFocus(transcript: transcript, selectedGoal: goal)
+    }
+
     private let speech = SpeechTranscriber()
     private let screens = ScreenObserver()
     private let overlay = HighlightOverlay()

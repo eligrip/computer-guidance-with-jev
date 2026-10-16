@@ -83,8 +83,7 @@ private struct SessionView: View {
     @State private var showingSpeechSettings = false
     @State private var showingSetup = UserDefaults.standard.bool(forKey: "setupInProgress")
     @State private var showingHighlightStyles = false
-    @State private var expandedTranscript = false
-    @State private var followingTranscript = true
+    @State private var showingConversationHistory = false
 
     var body: some View {
         Group {
@@ -158,33 +157,32 @@ private struct SessionView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    sectionLabel("HEARING YOU")
-                    Spacer()
-                    Toggle("Follow live", isOn: $followingTranscript).toggleStyle(.checkbox).font(.caption)
-                    Button(expandedTranscript ? "Less" : "More") { expandedTranscript.toggle() }
-                        .buttonStyle(.link).font(.caption)
-                        .accessibilityLabel(expandedTranscript ? "Show less conversation" : "Show more conversation")
-                }
+                sectionLabel("HEARING YOU")
                 ScrollViewReader { reader in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(session.transcript.isEmpty ? "Say what you’re trying to do, even if you’re still figuring it out." : session.transcript)
-                                .font(.system(size: 14)).foregroundStyle(session.transcript.isEmpty ? .secondary : .primary)
+                            Text(session.conversationFocus.currentRequest.isEmpty ? "Say what you’re trying to do, even if you’re still figuring it out." : session.conversationFocus.currentRequest)
+                                .font(.system(size: 14)).foregroundStyle(session.conversationFocus.currentRequest.isEmpty ? .secondary : .primary)
                                 .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                             Color.clear.frame(height: 1).id("latest-speech")
                         }
                     }
-                    .onChange(of: session.transcript) { _ in
-                        if followingTranscript { reader.scrollTo("latest-speech", anchor: .bottom) }
-                    }
-                    .onChange(of: followingTranscript) { following in
-                        if following { reader.scrollTo("latest-speech", anchor: .bottom) }
+                    .onChange(of: session.conversationFocus.currentRequest) { _ in
+                        reader.scrollTo("latest-speech", anchor: .bottom)
                     }
                     .onAppear {
-                        if followingTranscript { reader.scrollTo("latest-speech", anchor: .bottom) }
+                        reader.scrollTo("latest-speech", anchor: .bottom)
                     }
-                }.frame(height: expandedTranscript ? 320 : 170)
+                }.frame(height: 120)
+                if !session.conversationFocus.earlierConversation.isEmpty {
+                    DisclosureGroup("Earlier conversation", isExpanded: $showingConversationHistory) {
+                        ScrollView {
+                            Text(session.conversationFocus.earlierConversation)
+                                .font(.system(size: 13)).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                        }.frame(height: 180)
+                    }.font(.system(size: 12))
+                }
                 Text(session.speechStatus).font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
