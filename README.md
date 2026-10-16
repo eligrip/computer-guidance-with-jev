@@ -29,6 +29,10 @@ You can also type a thought into the panel. The menu-bar icon opens session cont
 
 **Highlight style** offers three native vector previews: Soft outline (default), Corner guides, and Underline. A style change redraws the current target without moving it or resetting the highlight latch.
 
+**Hearing you** shows a scrollable conversation, follows new speech automatically, and expands with **More**. Turn off **Follow live** to review earlier words. The app retains up to 24,000 characters of recent conversation for Jev. **Keeping in mind** follows the latest task expressed in your own words, including a change of task without an explicit cancellation.
+
+**Settings → Guidance pace** defaults to **Fast**: two target requests can run concurrently, with new dispatches at least 100 ms apart. **Balanced** uses one target request and a 250 ms minimum interval. Both keep checking after a highlight appears; those checks cannot replace a box on an unchanged screen. The panel reports completed target/goal calls, recent calls per second, and latency.
+
 ### Speech setup and recovery
 
 Normal setup uses the **Voice** step, with no provider or language choices to navigate. **Settings → Permissions** reopens the three-step guide. **Settings → Advanced speech** lets you change the spoken language or recognition mode when needed. **On-device only** is the default. Apple can report its recognition service as available even when its on-device model is unavailable to this app. That is a language/model availability check, not a claim that your Mac cannot transcribe speech.
@@ -64,11 +68,11 @@ Add preferred apps, recurring tasks, or vocabulary such as what you mean by “m
 A Rust engine handles Jev requests, verbatim goal selection, and answer validation. A thin Swift shell handles macOS speech, screen capture, permissions, and the overlay. They communicate over private process pipes; there is no local HTTP server. The engine reuses its HTTP client and handles goal and guidance requests concurrently.
 
 - **Speech:** Apple's speech recognizer streams partial transcripts in your selected language. On-device-only mode keeps audio local; online recognition is an explicit alternative. Revisions replace provisional words, rather than duplicating them.
-- **Observation:** the app captures the active external window, its menus/popovers, and the visible Dock on the same display. With no foreground window, it can capture the visible Dock alone. Other apps, wallpaper, and its own highlight are excluded. Separate Dock samples detect icon layout changes; a hidden Dock cannot supply visible targets until the user reveals it.
+- **Observation:** the app captures the active external window, its menus/popovers, and the visible Dock on the same display. It finds the painted Dock inside macOS's sometimes display-sized transparent backing window. With no foreground window, it can capture the visible Dock alone. Other apps, wallpaper, and its own highlight are excluded. Alternating requests use a closer Dock image with its own coordinate mapping. Separate Dock samples detect substantial content changes; tiny badges, caret blinks, and hover color changes do not release a box. A hidden Dock cannot supply visible targets until the user reveals it.
 - **Guidance:** `jev-1.14.0` receives recent speech, the goal anchor, notes, current screenshot, and available browser/accessibility context. A Box question locates the next useful target; a Noul question checks whether a useful target is visible.
-- **Goal anchor:** a separate, intermittent Choice request selects an exact passage from the transcript, keeps the previous anchor, or clears it. The app never asks Jev to generate goal text.
+- **Goal anchor:** a separate request combines a Noul judgment about a new/completed task with a Choice over recent exact source clauses. A newer task replaces an older broader goal; ordinary substeps retain it. Fast mode checks changed speech at least 400 ms apart and reconsiders unchanged speech every two seconds. This continues while the app panel is open or capture is unavailable. The app never asks Jev to generate goal text.
 - **Presentation:** a deterministic latch accepts a box for the current screen generation. Responses from old screens and stopped sessions are discarded. Further responses cannot move the box on the unchanged screen.
-- **Scheduling:** partial speech schedules fresh evaluation immediately. The newest context is evaluated again as soon as a guidance request finishes, with one guidance request in flight. A 160 ms observation loop catches screen changes. Goal inference is separate, so it does not block pointing. Rate limits and temporary service failures trigger backoff.
+- **Scheduling:** partial speech schedules fresh evaluation immediately. The newest context is evaluated again as soon as a request slot opens. Fast mode uses an 80 ms observation loop, two concurrent guidance requests, and one independent goal request. Balanced uses a 160 ms loop and one guidance request. Rate limits and temporary service failures trigger backoff; a concurrent successful response cannot shorten a retry deadline.
 
 Images and Box are experimental TypeSafe features. Confidence thresholds and screen-change sensitivity are prototype defaults; they need evaluation on actual desktop tasks. A presence judgment does not prove the returned box is the correct action.
 
@@ -80,7 +84,15 @@ Native self-tests check padding, image limits, coordinate scaling, and a display
 
 ## Data boundaries
 
-During a help session, the current external window and visible Dock image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac in the default on-device-only mode. If you explicitly allow Apple online recognition, audio may be sent to Apple for transcription; audio is never sent to TypeSafe. Screen images and transcripts are not written to logs or saved as recordings. The optional extension writes only its latest context to a local file with restricted permissions.
+During a help session, the current external window and visible Dock image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac in the default on-device-only mode. If you explicitly allow Apple online recognition, audio may be sent to Apple for transcription; audio is never sent to TypeSafe. The optional extension writes only its latest context to a local file with restricted permissions.
+
+### Local session recordings
+
+While iterating from a developer checkout, session recording defaults on. Other installations default off. **Settings → Save session recordings on this Mac** controls it, and an indicator stays visible during a recorded session. This saves the JPEGs sent to Jev, conversation text, goal changes, decision probabilities, latency, and highlight/display-suppression events under `~/Library/Application Support/JevAssist/recordings`. It records neither raw microphone audio nor API credentials. **Open recordings** opens that folder.
+
+Recordings use owner-only folders/files and never enter Git. Repeated identical images are deduplicated; asynchronous writing cannot block guidance. Limits are 256 MiB per session, 1 GiB overall, and 20 sessions. Old recordings are removed to stay within those limits, and a full/failing disk stops recording without stopping assistance. Recording starts only with an active help session and ends when it stops or recording is disabled.
+
+Open a run’s `review.html`, choose `events.ndjson` from the same folder, then scrub or play the timeline. Solid teal marks the held highlight; dashed amber marks Jev’s candidate. The viewer shows the request’s conversation, goal, probabilities, latency, and display/suppression reasons without a server or network access. Keep `review.html`, `events.ndjson`, and `frames/` together.
 
 The app never clicks, types, scrolls, or runs commands on your behalf. Page content is treated as evidence, not executable instructions. A browser page may contain sensitive text, so only start sharing a page you intend to use with the assistant.
 
@@ -90,12 +102,15 @@ The app never clicks, types, scrolls, or runs commands on your behalf. Page cont
 cargo test --manifest-path engine/Cargo.toml --locked
 bash scripts/test-core.sh
 node --test Tests/browser-extension.test.mjs
+node scripts/test-recording-review.cjs
 ./scripts/build.sh
 dist/JevAssist.app/Contents/MacOS/JevAssist --self-test
 JEV_ASSIST_BRIDGE_TEST_BINARY="$PWD/dist/JevAssist.app/Contents/MacOS/JevAssistBridge" python3 Tests/browser-bridge.test.py -v
 ```
 
 The tests cover highlight persistence, stale responses, session boundaries, exact goal selection, API payloads, malformed output, Rust process reuse, cancellation, and restart. Native checks cover image preparation and screen coordinates. Browser bridge tests use temporary directories and synthetic messages. With full Xcode installed, `swift test --disable-sandbox` also runs the XCTest suite; Command Line Tools alone may lack XCTest. GitHub Actions runs the full suite on macOS.
+
+To prepare an update while an existing demo stays running, use `./scripts/build.sh --stage`. This writes a separately signed bundle to `.build/next/JevAssist.app` and leaves `dist/JevAssist.app` untouched. It does not launch or install the update. After the demo is finished, stop and quit the existing app, then build/run normally to apply the changes at the established bundle path.
 
 To verify an installed English (US) speech model on your Mac, run `swift scripts/check-local-speech.swift`. It synthesizes a fixed sentence into a temporary file and transcribes it with on-device recognition required. It never opens the microphone, sends a Jev request, or opts into online transcription. Run it outside restrictive process sandboxes so it can reach Apple’s speech service; it is intentionally separate from CI because local speech assets must already be installed.
 

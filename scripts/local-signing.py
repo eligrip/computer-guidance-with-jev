@@ -137,7 +137,7 @@ def sign_app(app):
     if not re.fullmatch(r"[A-F0-9]{40}", identity):
         raise RuntimeError("Invalid local signing identity file")
     app = Path(app).resolve()
-    if app != ROOT / "dist/JevAssist.app":
+    if app not in [ROOT / "dist/JevAssist.app", ROOT / ".build/next/JevAssist.app"]:
         raise RuntimeError("Local signing is limited to this project's built app")
     with (DIRECTORY / "build.lock").open("a") as lock, cleanup_on_termination():
         fcntl.flock(lock, fcntl.LOCK_EX)

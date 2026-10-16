@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import JevAssistCore
 
 @main
 struct JevAssistApp: App {
@@ -82,6 +83,8 @@ private struct SessionView: View {
     @State private var showingSpeechSettings = false
     @State private var showingSetup = UserDefaults.standard.bool(forKey: "setupInProgress")
     @State private var showingHighlightStyles = false
+    @State private var expandedTranscript = false
+    @State private var followingTranscript = true
 
     var body: some View {
         Group {
@@ -133,6 +136,14 @@ private struct SessionView: View {
             }
             .padding(12).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
 
+            if session.isRecording {
+                Label("Recording this session on your Mac", systemImage: "record.circle")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.orange)
+            } else if session.isRunning && session.recordingEnabled && !session.recordingStatus.isEmpty {
+                Text(session.recordingStatus).font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Button(action: startOrSetUp) {
                 Label(session.isRunning ? "Stop help session" : "Start help session",
                       systemImage: session.isRunning ? "stop.fill" : "mic.fill")
@@ -147,12 +158,33 @@ private struct SessionView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("HEARING YOU")
-                ScrollView {
-                    Text(session.transcript.isEmpty ? "Say what you’re trying to do, even if you’re still figuring it out." : session.transcript)
-                        .font(.system(size: 14)).foregroundStyle(session.transcript.isEmpty ? .secondary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                }.frame(height: 85)
+                HStack {
+                    sectionLabel("HEARING YOU")
+                    Spacer()
+                    Toggle("Follow live", isOn: $followingTranscript).toggleStyle(.checkbox).font(.caption)
+                    Button(expandedTranscript ? "Less" : "More") { expandedTranscript.toggle() }
+                        .buttonStyle(.link).font(.caption)
+                        .accessibilityLabel(expandedTranscript ? "Show less conversation" : "Show more conversation")
+                }
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(session.transcript.isEmpty ? "Say what you’re trying to do, even if you’re still figuring it out." : session.transcript)
+                                .font(.system(size: 14)).foregroundStyle(session.transcript.isEmpty ? .secondary : .primary)
+                                .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                            Color.clear.frame(height: 1).id("latest-speech")
+                        }
+                    }
+                    .onChange(of: session.transcript) { _ in
+                        if followingTranscript { reader.scrollTo("latest-speech", anchor: .bottom) }
+                    }
+                    .onChange(of: followingTranscript) { following in
+                        if following { reader.scrollTo("latest-speech", anchor: .bottom) }
+                    }
+                    .onAppear {
+                        if followingTranscript { reader.scrollTo("latest-speech", anchor: .bottom) }
+                    }
+                }.frame(height: expandedTranscript ? 320 : 170)
                 Text(session.speechStatus).font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -177,13 +209,31 @@ private struct SessionView: View {
                 Button("Your notes") { session.openNotes() }
                 Button("Highlight style") { showingHighlightStyles = true }
                 Spacer()
-                Text(session.metrics).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                 Button { showingSettings.toggle() } label: { Image(systemName: "gearshape") }
                     .accessibilityLabel("Settings")
             }.buttonStyle(.plain)
+            if !session.metrics.isEmpty {
+                Text(session.metrics).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             if showingSettings {
                 VStack(alignment: .leading, spacing: 10) {
+                    Picker("Guidance pace", selection: Binding(get: { session.guidancePace }, set: session.setGuidancePace)) {
+                        ForEach(GuidancePace.allCases) { pace in Text(pace.title).tag(pace) }
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("Save session recordings on this Mac", isOn: Binding(get: { session.recordingEnabled }, set: session.setRecordingEnabled))
+                        .toggleStyle(.switch).font(.system(size: 13))
+                    Text("Saves screen images, your words, and guidance decisions locally. No microphone audio. Old recordings are removed when storage fills.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("Open recordings") { session.openRecordings() }
+                        if !session.recordingStatus.isEmpty {
+                            Text(session.recordingStatus).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
                     Text(session.hasAPIKey ? "Jev API key is configured" : "Add your Jev API key to begin").font(.caption)
                     HStack {
                         SecureField("New TypeSafe API key", text: $key)

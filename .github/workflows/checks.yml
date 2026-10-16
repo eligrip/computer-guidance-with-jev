@@ -26,6 +26,8 @@ jobs:
         run: bash scripts/test-core.sh
       - name: Browser context behavior
         run: node --test Tests/browser-extension.test.mjs
+      - name: Offline recording replay
+        run: node scripts/test-recording-review.cjs
       - name: Interrupted local signing cleanup
         run: python3 Tests/local-signing.test.py -v
       - name: Build signed app and bridge

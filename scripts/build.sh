@@ -2,13 +2,17 @@
 set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
+case "${1:-}" in
+    "") APP_DIR="$PROJECT_ROOT/dist/JevAssist.app" ;;
+    --stage) APP_DIR="$PROJECT_ROOT/.build/next/JevAssist.app" ;;
+    *) printf 'Usage: scripts/build.sh [--stage]\n' >&2; exit 1 ;;
+esac
 mkdir -p "$PROJECT_ROOT/.build/module-cache"
 export CLANG_MODULE_CACHE_PATH="$PROJECT_ROOT/.build/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PROJECT_ROOT/.build/module-cache"
 cargo build --manifest-path "$PROJECT_ROOT/engine/Cargo.toml" --release --locked
 swift build -c release --disable-sandbox
 BIN_DIR="$(swift build -c release --show-bin-path --disable-sandbox)"
-APP_DIR="$PROJECT_ROOT/dist/JevAssist.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/JevAssist" "$APP_DIR/Contents/MacOS/JevAssist"
 cp "$BIN_DIR/JevAssistBridge" "$APP_DIR/Contents/MacOS/JevAssistBridge"

@@ -74,6 +74,41 @@ final class HighlightLatchTests: XCTestCase {
         XCTAssertTrue(latch.apply(result(next), for: newest))
     }
 
+    func testDockAbstentionDoesNotSuppressAnOlderAppResult() throws {
+        var latch = HighlightLatch()
+        latch.beginSession()
+        let scene = try XCTUnwrap(latch.makeRequest(view: .scene))
+        let dock = try XCTUnwrap(latch.makeRequest(view: .dock))
+        XCTAssertFalse(latch.apply(result(nil), for: dock))
+        XCTAssertTrue(latch.apply(result(first), for: scene))
+        let nextDock = try XCTUnwrap(latch.makeRequest(view: .dock))
+        XCTAssertFalse(latch.apply(result(next), for: nextDock))
+        XCTAssertEqual(latch.box, first)
+        let uncertain = try XCTUnwrap(latch.makeRequest())
+        XCTAssertFalse(latch.apply(GuidanceResult(box: nil, confidence: 0.01, presence: 0.9), for: uncertain))
+        XCTAssertEqual(latch.box, first)
+    }
+
+    func testEachViewRejectsOldScreensAndOrdersItsOwnCompletions() throws {
+        var latch = HighlightLatch()
+        latch.beginSession()
+        let scene = try XCTUnwrap(latch.makeRequest(view: .scene))
+        let dock = try XCTUnwrap(latch.makeRequest(view: .dock))
+        latch.screenDidChange()
+        XCTAssertFalse(latch.apply(result(first), for: scene))
+        XCTAssertFalse(latch.apply(result(next), for: dock))
+        let oldDock = try XCTUnwrap(latch.makeRequest(view: .dock))
+        let newerDock = try XCTUnwrap(latch.makeRequest(view: .dock))
+        XCTAssertFalse(latch.apply(result(nil), for: newerDock))
+        XCTAssertFalse(latch.apply(result(next), for: oldDock))
+        let freshScene = try XCTUnwrap(latch.makeRequest(view: .scene))
+        XCTAssertTrue(latch.apply(result(first), for: freshScene))
+        latch.endSession()
+        latch.beginSession()
+        let restartedDock = try XCTUnwrap(latch.makeRequest(view: .dock))
+        XCTAssertTrue(latch.apply(result(next), for: restartedDock))
+    }
+
     func testEndedAndRestartedSessionsRejectOutstandingResults() throws {
         var latch = HighlightLatch()
         XCTAssertNil(latch.makeRequest())

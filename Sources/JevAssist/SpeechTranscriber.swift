@@ -1,5 +1,6 @@
 import AVFoundation
 import Speech
+import JevAssistCore
 
 /// Uses provisional hypotheses immediately. A recognizer restart commits only the
 /// latest hypothesis once, so replacement partials never duplicate conversation.
@@ -14,8 +15,7 @@ final class SpeechTranscriber {
     private var recognition: SFSpeechRecognitionTask?
     private var restartTask: Task<Void, Never>?
     private var generation = UUID()
-    private var committed = ""
-    private var partial = ""
+    private var history = SpeechTranscriptAccumulator()
     private var running = false
     private var tapInstalled = false
     private var failures = 0
@@ -25,8 +25,7 @@ final class SpeechTranscriber {
         let retained = preservingTranscript ? fullTranscript : ""
         stop()
         self.configuration = configuration
-        committed = retained
-        partial = ""
+        history.reset(retaining: retained)
         onText?(fullTranscript)
         failures = 0
         running = true
@@ -59,6 +58,7 @@ final class SpeechTranscriber {
 
     func stop() {
         running = false
+        history.finishSegment(generation)
         generation = UUID()
         restartTask?.cancel()
         restartTask = nil
@@ -76,6 +76,7 @@ final class SpeechTranscriber {
         }
         generation = UUID()
         let recognitionID = generation
+        history.beginSegment(recognitionID)
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = configuration.requiresOnDeviceRecognition
@@ -102,8 +103,9 @@ final class SpeechTranscriber {
             Task { @MainActor in
                 guard let self, self.running, self.generation == recognitionID else { return }
                 if let result {
-                    self.partial = result.bestTranscription.formattedString
-                    self.onText?(self.fullTranscript)
+                    if self.history.updatePartial(result.bestTranscription.formattedString, segmentID: recognitionID) {
+                        self.onText?(self.fullTranscript)
+                    }
                     self.failures = 0
                     if result.isFinal { self.scheduleRestart(after: 0.15); return }
                 }
@@ -131,14 +133,13 @@ final class SpeechTranscriber {
     }
 
     private var fullTranscript: String {
-        [committed, partial].filter { !$0.isEmpty }.joined(separator: " ")
+        history.text
     }
 
     private func scheduleRestart(after delay: Double) {
         guard running else { return }
         restartTask?.cancel()
-        committed = String(fullTranscript.suffix(12_000))
-        partial = ""
+        history.finishSegment(generation)
         generation = UUID()
         let pendingID = generation
         tearDownAudio()

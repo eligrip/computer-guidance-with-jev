@@ -22,6 +22,9 @@ struct ScreenSnapshot {
     var dockProcessID: pid_t? = nil
     var dockBounds: [CGRect] = []
     var dockFingerprint: [UInt8] = []
+    var dockSurfaceIDs: [CGWindowID] = []
+    var dockJPEG: Data? = nil
+    var dockImageContentRect: CGRect? = nil
 
     var identity: String {
         "\(processID):\(surfaceIDs):\(surfaceBounds):\(screenBounds.origin.x):\(screenBounds.origin.y):\(screenBounds.width):\(screenBounds.height)"
@@ -52,78 +55,63 @@ struct ScreenSnapshot {
                       width: rect.width / screenBounds.width * imageContentRect.width,
                       height: rect.height / screenBounds.height * imageContentRect.height)
     }
+
+    /// A larger view of the Dock prepared from the same capture, never a new
+    /// screen read. The caller must validate freshness against this original
+    /// full snapshot, then map the chosen box using the returned focused frame.
+    func focusedOnDock() -> ScreenSnapshot? {
+        guard let jpeg = dockJPEG, let content = dockImageContentRect,
+              let first = dockBounds.first else { return nil }
+        let bounds = dockBounds.dropFirst().reduce(first) { $0.union($1) }
+        var focused = ScreenSnapshot(windowID: dockSurfaceIDs.first ?? windowID,
+            processID: processID, bundleID: bundleID, appName: appName, windowTitle: "Dock",
+            screenBounds: bounds, jpeg: jpeg, fingerprint: dockFingerprint,
+            imageContentRect: content, surfaceIDs: dockSurfaceIDs)
+        focused.surfaceBounds = dockBounds
+        focused.dockProcessID = dockProcessID
+        focused.dockBounds = dockBounds
+        focused.dockFingerprint = dockFingerprint
+        focused.dockSurfaceIDs = dockSurfaceIDs
+        return focused
+    }
 }
 
 @MainActor
 final class ScreenObserver {
-    private var baseline: ScreenSnapshot?
-    private var pending: ScreenSnapshot?
-    private var pendingSince = Date.distantPast
+    /// Valid only for the most recent capture attempt. A missing frame caused
+    /// by read/capture failures is never reported as confirmed disappearance.
+    private(set) var captureConfirmedNoSurfaces = false
+    private var sceneDetector = ScreenSceneDetector()
     private var cachedAccessibility = ""
     private var accessibilityReadAt = Date.distantPast
     private var accessibilityIdentity = ""
 
     func reset() {
-        baseline = nil; pending = nil
+        sceneDetector.reset()
         accessibilityIdentity = ""
         cachedAccessibility = ""
         accessibilityReadAt = .distantPast
     }
 
     func sameScene(_ first: ScreenSnapshot, _ second: ScreenSnapshot) -> Bool {
-        first.identity == second.identity && !pixelsDiffer(first, second)
+        ScreenSceneDetector.sameScene(sceneSample(first), sceneSample(second))
     }
 
-    private func pixelsDiffer(_ first: ScreenSnapshot, _ second: ScreenSnapshot) -> Bool {
-        isDifferent(first.fingerprint, second.fingerprint) ||
-        (!(first.dockFingerprint.isEmpty && second.dockFingerprint.isEmpty) &&
-         isDifferent(first.dockFingerprint, second.dockFingerprint))
+    private func sceneSample(_ frame: ScreenSnapshot) -> ScreenSceneSample {
+        ScreenSceneSample(identity: frame.identity, fingerprint: frame.fingerprint,
+                          secondaryFingerprint: frame.dockFingerprint)
     }
 
-    /// Small pixel changes (caret, pointer and tiny hover animations) don't count.
-    /// A changed page must remain stable across samples before releasing a box.
+    /// Tiny appearance changes never release a box. Geometry and broad content
+    /// changes advance immediately; smaller real changes briefly settle.
     func observe(_ frame: ScreenSnapshot) -> (changed: Bool, stable: Bool) {
-        guard let baseline else { self.baseline = frame; return (true, true) }
-        if baseline.identity != frame.identity {
-            self.baseline = frame
-            pending = nil
-            accessibilityIdentity = ""
-            return (true, true)
-        }
-        guard pixelsDiffer(baseline, frame) else {
-            pending = nil
-            return (false, true)
-        }
-        if let pending, !pixelsDiffer(pending, frame), Date().timeIntervalSince(pendingSince) >= 0.12 {
-            self.baseline = frame
-            self.pending = nil
-            accessibilityIdentity = ""
-            return (true, true)
-        }
-        pending = frame
-        pendingSince = Date()
-        return (false, false)
-    }
-
-    private func isDifferent(_ a: [UInt8], _ b: [UInt8]) -> Bool {
-        guard a.count == b.count, !a.isEmpty else { return true }
-        var changed = 0
-        var totalDifference = 0
-        var tileChanges = [Int](repeating: 0, count: 160)
-        for i in a.indices {
-            let difference = abs(Int(a[i]) - Int(b[i]))
-            if difference > 24 {
-                changed += 1
-                tileChanges[(i / 128 / 8) * 16 + (i % 128 / 8)] += 1
-            }
-            totalDifference += difference
-        }
-        let globalChange = Double(changed) / Double(a.count) > 0.008 && Double(totalDifference) / Double(a.count) > 0.8
-        let localChange = changed >= 30 && (tileChanges.max() ?? 0) >= 22
-        return globalChange || localChange
+        let observation = sceneDetector.observe(sceneSample(frame), at: ProcessInfo.processInfo.systemUptime)
+        if observation.changed { accessibilityIdentity = "" }
+        return (observation.changed, observation.stable)
     }
 
     func capture(app: NSRunningApplication) -> ScreenSnapshot? {
+        captureConfirmedNoSurfaces = false
         guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
         let surfaces = windows.compactMap { window -> CaptureSurface? in
@@ -140,8 +128,32 @@ final class ScreenObserver {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
             return CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
         }
+        var dockContentBounds: [CGWindowID: CGRect] = [:]
+        // Missing process/display/metadata evidence is uncertainty, not absence.
+        var dockReadCertain = !dockPIDs.isEmpty && !displays.isEmpty && surfaces.count == windows.count
+        for surface in surfaces where dockPIDs.contains(surface.processID) &&
+            surface.layer == Int(CGWindowLevelForKey(.dockWindow)) && surface.alpha > 0 {
+            // The real Dock can have a full-display transparent backing window.
+            // Capture only that window and inspect alpha to find its actual bar;
+            // window metadata alone cannot distinguish it from a fullscreen UI.
+            guard let dockWindowArray = CFArrayCreateMutable(nil, 0, nil) else { dockReadCertain = false; continue }
+            CFArrayAppendValue(dockWindowArray, UnsafeRawPointer(bitPattern: Int(surface.id)))
+            guard let dockImage = CGImage(windowListFromArrayScreenBounds: surface.bounds,
+                windowArray: dockWindowArray, imageOption: [.boundsIgnoreFraming, .nominalResolution]) else { dockReadCertain = false; continue }
+            switch DockSurfaceGeometry.assess(dockImage, windowBounds: surface.bounds, displays: displays) {
+            case .visible(let visible): dockContentBounds[surface.id] = visible
+            case .absent: break
+            case .unavailable: dockReadCertain = false
+            }
+        }
         guard let selection = CaptureSurfaceSelection.select(surfaces, foregroundPID: app.processIdentifier,
-            dockPIDs: dockPIDs, displays: displays, pointer: CGEvent(source: nil)?.location ?? .zero) else { return nil }
+            dockPIDs: dockPIDs, displays: displays, pointer: CGEvent(source: nil)?.location ?? .zero,
+            dockContentBounds: dockContentBounds) else {
+            // Metadata was read successfully, no app window qualified, and the
+            // Dock is absent/hidden (not merely unreadable). No timer involved.
+            captureConfirmedNoSurfaces = dockReadCertain
+            return nil
+        }
         let surfaceIDs = selection.surfaces.map(\.id)
         let bounds = selection.bounds
         // Composite only foreground app surfaces plus the verified visible Dock.
@@ -161,13 +173,20 @@ final class ScreenObserver {
         snapshot.surfaceBounds = selection.surfaceBounds
         snapshot.dockProcessID = selection.dockSurfaces.first?.processID
         snapshot.dockBounds = selection.dockBounds
+        snapshot.dockSurfaceIDs = selection.dockSurfaces.map(\.id)
         if let firstDock = selection.dockBounds.first {
             let dockArea = selection.dockBounds.dropFirst().reduce(firstDock) { $0.union($1) }
             let scaleX = CGFloat(image.width) / bounds.width, scaleY = CGFloat(image.height) / bounds.height
             let crop = CGRect(x: (dockArea.minX - bounds.minX) * scaleX,
                               y: (dockArea.minY - bounds.minY) * scaleY,
                               width: dockArea.width * scaleX, height: dockArea.height * scaleY).integral
-            if let dockImage = image.cropping(to: crop), let pixels = self.fingerprint(dockImage) { snapshot.dockFingerprint = pixels }
+            if let dockImage = image.cropping(to: crop) {
+                snapshot.dockFingerprint = self.fingerprint(dockImage) ?? []
+                if let dockPrepared = prepare(dockImage) {
+                    snapshot.dockJPEG = dockPrepared.data
+                    snapshot.dockImageContentRect = dockPrepared.contentRect
+                }
+            }
         }
         return snapshot
     }

@@ -25,9 +25,21 @@ struct CaptureSelection {
 enum CaptureSurfaceSelection {
     static func select(_ surfaces: [CaptureSurface], foregroundPID: pid_t,
                        dockPIDs: Set<pid_t>, displays: [CGRect], pointer: CGPoint,
+                       dockContentBounds: [CGWindowID: CGRect]? = nil,
                        dockLayer: Int = Int(CGWindowLevelForKey(.dockWindow))) -> CaptureSelection? {
         guard !displays.isEmpty else { return nil }
-        let eligible = surfaces.filter { surface in
+        let resolved = surfaces.compactMap { surface -> CaptureSurface? in
+            guard dockPIDs.contains(surface.processID), surface.layer == dockLayer,
+                  let dockContentBounds else { return surface }
+            // Modern macOS can report the Dock's transparent backing window as
+            // display-sized. Replace that metadata rectangle with the extent of
+            // its painted content. An absent entry means the isolated surface
+            // was hidden, unreadable, or not a visible Dock strip.
+            guard let visible = dockContentBounds[surface.id] else { return nil }
+            return CaptureSurface(id: surface.id, processID: surface.processID,
+                                  layer: surface.layer, bounds: visible, alpha: surface.alpha, title: surface.title)
+        }
+        let eligible = resolved.filter { surface in
             surface.alpha > 0 && surface.bounds.width > 10 && surface.bounds.height > 10 &&
             [surface.bounds.minX, surface.bounds.minY, surface.bounds.width, surface.bounds.height].allSatisfy(\.isFinite)
         }
@@ -46,8 +58,9 @@ enum CaptureSurfaceSelection {
         }
 
         // A Dock process also owns wallpaper and other desktop-sized surfaces.
-        // Its PID alone is insufficient: require the documented Dock window
-        // level and a visible strip at the bottom, left, or right display edge.
+        // Its PID alone is insufficient: require the Dock window level and a
+        // painted strip at the bottom, left, or right display edge. Full-display
+        // backing-window metadata has already been resolved above.
         let docks = eligible.filter {
             dockPIDs.contains($0.processID) && $0.layer == dockLayer && isVisibleDockStrip($0.bounds, on: display)
         }

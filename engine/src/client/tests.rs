@@ -29,6 +29,13 @@ fn guidance_answer(presence: f64, confidence: f64) -> Value {
     }})
 }
 
+fn goal_answer(choice: &str, changed: f64) -> Value {
+    json!({ "answers": {
+        "goal": { "type": "choice", "choice": choice, "confidence": 0.8 },
+        "goal_changed": { "type": "noul", "noul": changed }
+    }})
+}
+
 async fn fixture_server(
     status: u16,
     body: &str,
@@ -206,16 +213,69 @@ fn goal_wire_request_preserves_options_and_rejects_generated_values() {
     let criteria = payload["questions"]["goal"]["criteria"]
         .as_object()
         .unwrap();
-    assert_eq!(criteria.len(), candidates.len() + 2);
+    assert_eq!(criteria.len(), candidates.len() + 1);
     assert!(criteria.contains_key("none"));
-    assert!(criteria.contains_key("keep_previous"));
-    let good = json!({ "answers": { "goal": { "type": "choice", "choice": candidates[0].id, "confidence": 0.8 }}});
+    assert!(!criteria.contains_key("keep_previous"));
+    assert_eq!(payload["questions"]["goal_changed"]["type"], "noul");
+    let good = goal_answer(&candidates[0].id, 0.9);
     assert_eq!(
         parse_goal(&serde_json::to_vec(&good).unwrap(), &candidates, None).unwrap(),
         Some(candidates[0].text.clone())
     );
-    let bad = json!({ "answers": { "goal": { "type": "choice", "choice": "generated text", "confidence": 0.8 }}});
+    let bad = goal_answer("generated text", 0.9);
     assert!(parse_goal(&serde_json::to_vec(&bad).unwrap(), &candidates, None).is_err());
+}
+
+#[test]
+fn fresh_goal_replaces_old_anchor_while_substeps_and_chatter_keep_it() {
+    let previous = "I want to find Jane’s attachment.";
+    let speech = format!("{previous} I want to join the Zoom call");
+    let candidates = goals::candidates(&speech);
+    let changed = serde_json::to_vec(&goal_answer(&candidates[0].id, 0.96)).unwrap();
+    assert_eq!(
+        parse_goal(&changed, &candidates, Some(previous))
+            .unwrap()
+            .as_deref(),
+        Some("I want to join the Zoom call")
+    );
+    // The speculative Choice is ignored when the independent judgment says
+    // recent speech is just a substep or unrelated conversation.
+    for speech in [
+        "Where should I click to find that attachment?",
+        "It is raining outside.",
+    ] {
+        let candidates = goals::candidates(speech);
+        let unchanged = serde_json::to_vec(&goal_answer(&candidates[0].id, 0.02)).unwrap();
+        assert_eq!(
+            parse_goal(&unchanged, &candidates, Some(previous))
+                .unwrap()
+                .as_deref(),
+            Some(previous)
+        );
+        assert_eq!(parse_goal(&unchanged, &candidates, None).unwrap(), None);
+    }
+    let cancelled = serde_json::to_vec(&goal_answer("none", 0.98)).unwrap();
+    assert_eq!(
+        parse_goal(&cancelled, &candidates, Some(previous)).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn goal_change_probability_is_validated_without_accepting_a_fake_branch() {
+    let candidates = goals::candidates("Join the call");
+    for probability in [-0.1, 1.1] {
+        assert!(
+            parse_goal(
+                &serde_json::to_vec(&goal_answer("source_0", probability)).unwrap(),
+                &candidates,
+                Some("old task")
+            )
+            .is_err()
+        );
+    }
+    let fake_keep = serde_json::to_vec(&goal_answer("keep_previous", 0.99)).unwrap();
+    assert!(parse_goal(&fake_keep, &candidates, Some("old task")).is_err());
 }
 
 #[tokio::test]
@@ -267,12 +327,8 @@ async fn http_rate_limit_reaches_caller_without_echoed_error_body() {
 
 #[tokio::test]
 async fn http_goal_response_copies_exact_unicode_candidate() {
-    let (engine, server) = fixture_server(
-        200,
-        r#"{"answers":{"goal":{"type":"choice","choice":"source_0","confidence":0.9}}}"#,
-        "",
-    )
-    .await;
+    let (engine, server) =
+        fixture_server(200, &goal_answer("source_0", 0.99).to_string(), "").await;
     let mut request = fixture_request("goal");
     let Operation::Goal(input) = &mut request.operation else {
         unreachable!()
@@ -300,7 +356,7 @@ async fn invalid_config_is_rejected_without_a_request() {
 }
 
 #[tokio::test]
-async fn protocol_runs_two_requests_at_a_time_and_delivers_all_ids() {
+async fn protocol_runs_three_requests_at_a_time_and_delivers_all_ids() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -325,7 +381,7 @@ async fn protocol_runs_two_requests_at_a_time_and_delivers_all_ids() {
                     let now = active.fetch_add(1, Ordering::SeqCst) + 1;
                     maximum.fetch_max(now, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(80)).await;
-                    let body = r#"{"answers":{"goal":{"type":"choice","choice":"source_0","confidence":0.9}}}"#;
+                    let body = goal_answer("source_0", 0.99).to_string();
                     let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     active.fetch_sub(1, Ordering::SeqCst);
                     stream.write_all(response.as_bytes()).await.unwrap();
@@ -357,6 +413,6 @@ async fn protocol_runs_two_requests_at_a_time_and_delivers_all_ids() {
         for index in 0..6 {
             assert!(values.iter().any(|value| value["id"] == format!("request-{index}") && value["ok"] == true));
         }
-        assert_eq!(observed.load(Ordering::SeqCst), 2, "Engine must run concurrently but never exceed two calls");
+        assert_eq!(observed.load(Ordering::SeqCst), 3, "Engine allows two guidance calls plus one goal call");
     }).await.expect("Bounded concurrency test timed out");
 }

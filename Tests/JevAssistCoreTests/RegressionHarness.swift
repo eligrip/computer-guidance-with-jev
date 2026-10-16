@@ -20,11 +20,39 @@ enum CoreRegressionHarness {
     }
 
     static func main() async throws {
+        try ScreenSceneChecks.run { try expect($0, $1) }
+        try TranscriptChecks.run { try expect($0, $1) }
         let a = NormalizedBox(top: 0.1, bottom: 0.2, left: 0.3, right: 0.4)
         let b = NormalizedBox(top: 0.5, bottom: 0.6, left: 0.7, right: 0.8)
         let first = GuidanceResult(box: a, confidence: 0.9, presence: 0.95)
         let second = GuidanceResult(box: b, confidence: 0.9, presence: 0.95)
         let absent = GuidanceResult(box: nil, confidence: 0.9, presence: 0.1)
+        var scoped = HighlightLatch()
+        scoped.beginSession()
+        let fullBeforeDock = scoped.makeRequest(view: .scene)!
+        let newerDock = scoped.makeRequest(view: .dock)!
+        try expect(!scoped.apply(absent, for: newerDock), "Absent Dock target unexpectedly latched")
+        try expect(scoped.apply(first, for: fullBeforeDock), "Dock abstention suppressed a valid app target")
+        let laterDock = scoped.makeRequest(view: .dock)!
+        try expect(!scoped.apply(second, for: laterDock) && scoped.box == a, "Another view replaced the held box")
+        let lowConfidence = scoped.makeRequest(view: .scene)!
+        try expect(!scoped.apply(GuidanceResult(box: nil, confidence: 0.01, presence: 0.9), for: lowConfidence)
+                   && scoped.box == a, "A low-confidence result erased the held box")
+        let staleScene = scoped.makeRequest(view: .scene)!
+        let staleDock = scoped.makeRequest(view: .dock)!
+        scoped.screenDidChange()
+        try expect(!scoped.apply(first, for: staleScene), "Old full scene survived navigation")
+        try expect(!scoped.apply(second, for: staleDock), "Old Dock scene survived navigation")
+        let oldDock = scoped.makeRequest(view: .dock)!
+        let currentDock = scoped.makeRequest(view: .dock)!
+        _ = scoped.apply(absent, for: currentDock)
+        try expect(!scoped.apply(second, for: oldDock), "Newer Dock abstention did not reject older Dock result")
+        let currentScene = scoped.makeRequest(view: .scene)!
+        try expect(scoped.apply(first, for: currentScene), "Dock ordering blocked the full scene")
+        scoped.endSession()
+        scoped.beginSession()
+        let restartedDock = scoped.makeRequest(view: .dock)!
+        try expect(scoped.apply(second, for: restartedDock), "New session retained previous view ordering")
         var latch = HighlightLatch()
         try expect(latch.makeRequest() == nil, "Inactive session issued a request")
         latch.beginSession()

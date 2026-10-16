@@ -27,16 +27,15 @@ enum NativeChecks {
         let caretResult = observer.observe(frame(caret))
         expect(!caretResult.changed && caretResult.stable, "caret blink preserves scene")
         let changed = frame([UInt8](repeating: 200, count: 128 * 80))
-        let pending = observer.observe(changed)
-        expect(!pending.changed && !pending.stable, "screen change waits for settled frame")
-        Thread.sleep(forTimeInterval: 0.14)
+        let navigation = observer.observe(changed)
+        expect(navigation.changed && navigation.stable, "broad navigation releases a stale target immediately")
         let settled = observer.observe(changed)
-        expect(settled.changed && settled.stable, "settled change releases old scene")
+        expect(!settled.changed && settled.stable, "unchanged navigation result stays stable")
         expect(observer.observe(frame(blank, window: 2)).changed, "window switch changes scene immediately")
         observer.reset()
         _ = observer.observe(snapshot)
         var localized = blank
-        for y in 16..<22 { for x in 16..<22 { localized[y * 128 + x] = 230 } }
+        for y in 16..<32 { for x in 16..<40 { localized[y * 128 + x] = 230 } }
         expect(!observer.observe(frame(localized)).stable, "small local dialog change is detected")
         expect(!observer.sameScene(snapshot, changed), "stale request screenshot rejected")
         expect(observer.sameScene(snapshot, frame(caret)), "tiny change does not reject request")
@@ -95,8 +94,23 @@ enum NativeChecks {
         expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: true) == nil, "available Apple recognition is usable without local assets after opt-in")
         expect(automaticSpeech.blocker(recognizerExists: false, onDeviceSupported: false, serviceAvailable: true) != nil, "unsupported speech language is reported separately")
         expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: false) != nil, "service outage is reported separately from local asset availability")
+        expect(GuidancePace.restored(nil) == .fast && GuidancePace.restored("unknown") == .fast, "fast guidance is the default")
+        expect(GuidancePace.fast.maximumConcurrentRequests == 2 && GuidancePace.balanced.maximumConcurrentRequests == 1, "guidance pace bounds concurrent requests")
+        expect(GuidancePace.fast.minimumInterval == 0.1 && GuidancePace.balanced.minimumInterval == 0.25, "guidance pace uses 100ms and 250ms dispatch intervals")
+        let now = Date(timeIntervalSince1970: 1_000)
+        let oldDispatch = now.addingTimeInterval(-1)
+        for pace in GuidancePace.allCases {
+            expect(!pace.canDispatch(inFlight: 0, lastDispatch: oldDispatch, retryAfter: now.addingTimeInterval(1), now: now), "retry-after blocks \(pace.rawValue) guidance")
+        }
+        expect(!GuidancePace.balanced.canDispatch(inFlight: 2, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "lowering pace does not dispatch while earlier requests run")
+        expect(!GuidancePace.fast.canDispatch(inFlight: 2, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance cannot exceed two requests")
+        expect(GuidancePace.fast.canDispatch(inFlight: 1, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance immediately fills a completed request slot")
+        expect(!GuidancePace.fast.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.05), retryAfter: .distantPast, now: now), "fast guidance honors its cadence")
+        expect(!GuidancePace.balanced.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.15), retryAfter: .distantPast, now: now), "balanced guidance honors its cadence")
         SetupChecks.run { expect($0, $1) }
         checks += CaptureSurfaceChecks.run()
+        checks += DockCaptureChecks.run()
+        checks += SessionRecorderChecks.run()
         print("Native checks passed: \(checks)")
     }
 }

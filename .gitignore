@@ -8,6 +8,7 @@ engine/target/
 .swiftpm/
 dist/
 artifacts/
+recordings/
 .local-signing/
 user_notes.md
 *.log

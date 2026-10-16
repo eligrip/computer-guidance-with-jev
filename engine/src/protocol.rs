@@ -91,7 +91,8 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let writer = Arc::new(Mutex::new(writer));
-    let concurrency = Arc::new(Semaphore::new(2));
+    // Two current-screen evaluations plus one intermittent goal judgment.
+    let concurrency = Arc::new(Semaphore::new(3));
     let mut tasks = JoinSet::new();
     loop {
         while tasks.try_join_next().is_some() {}

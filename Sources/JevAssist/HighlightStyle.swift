@@ -13,7 +13,7 @@ enum HighlightStyle: String, CaseIterable, Identifiable {
     }
     var detail: String {
         switch self {
-        case .softOutline: return "A fine line gently surrounds the target."
+        case .softOutline: return "A clear, soft outline surrounds the target."
         case .corners: return "Four small corners leave the control clear."
         case .underline: return "A quiet marker just below the target."
         }
@@ -61,7 +61,7 @@ enum HighlightDrawing {
             path.move(to: NSPoint(x: target.minX + radius, y: target.minY - 1))
             path.line(to: NSPoint(x: target.maxX - radius, y: target.minY - 1))
         }
-        path.lineWidth = style == .underline ? 3.5 : 2.5
+        path.lineWidth = style == .underline ? 4 : 3.5
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         let shadow = NSShadow()

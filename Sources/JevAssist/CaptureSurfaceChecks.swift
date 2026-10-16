@@ -71,10 +71,14 @@ enum CaptureSurfaceChecks {
         _ = observer.observe(snapshot)
         var dockPixels = snapshot
         for y in 16..<22 { for x in 16..<22 { dockPixels.dockFingerprint[y * 128 + x] = 230 } }
-        expect(!observer.sameScene(snapshot, dockPixels), "localized Dock icon change is detected independently of whole-screen reduction")
-        expect(!observer.observe(dockPixels).stable, "Dock animation waits for settling before replacing a highlight")
+        expect(observer.sameScene(snapshot, dockPixels), "tiny Dock icon flash preserves current-screen answers")
+        let iconFlash = observer.observe(dockPixels)
+        expect(!iconFlash.changed && iconFlash.stable, "tiny Dock icon animation keeps the highlight latched")
+        for y in 8..<72 { for x in 16..<48 { dockPixels.dockFingerprint[y * 128 + x] = 230 } }
+        expect(!observer.sameScene(snapshot, dockPixels), "substantial Dock content change invalidates old answers")
+        expect(!observer.observe(dockPixels).stable, "substantial local Dock change briefly settles")
         Thread.sleep(forTimeInterval: 0.14)
-        expect(observer.observe(dockPixels).changed, "settled Dock icon change advances the scene")
+        expect(observer.observe(dockPixels).changed, "settled substantial Dock change advances the scene")
         var removedDock = ScreenSnapshot(windowID: 1, processID: 10, bundleID: "fixture", appName: "Fixture", windowTitle: "Synthetic",
             screenBounds: selection.bounds, jpeg: Data(), fingerprint: blank,
             imageContentRect: CGRect(x: 0, y: 0, width: 1, height: 1), surfaceIDs: [1])
@@ -96,6 +100,17 @@ enum CaptureSurfaceChecks {
                "Dock item evidence round-trips through padded screenshot coordinates")
         expect(dockOnly.imageRect(forScreenRect: CGRect(x: 0, y: 0, width: 50, height: 50)) == nil,
                "off-capture accessibility items are excluded")
+        dockOnly.dockJPEG = Data([1, 2, 3])
+        dockOnly.dockImageContentRect = dockOnly.imageContentRect
+        dockOnly.dockSurfaceIDs = [2]
+        let focused = dockOnly.focusedOnDock()!
+        expect(focused.jpeg == Data([1, 2, 3]) && focused.screenBounds == dock.bounds && focused.surfaceIDs == [2],
+               "focused Dock request reuses prepared capture and excludes app surfaces")
+        let focusMapped = focused.screenRect(for: NormalizedBox(top: normalized.minY, bottom: normalized.maxY,
+                                                                left: normalized.minX, right: normalized.maxX))!
+        expect(abs(focusMapped.minX - icon.minX) < 0.001 && abs(focusMapped.minY - icon.minY) < 0.001 &&
+               abs(focusMapped.width - icon.width) < 0.001 && abs(focusMapped.height - icon.height) < 0.001,
+               "focused Dock box maps through its own padding to original screen coordinates")
         return checks
     }
 }
