@@ -49,6 +49,7 @@ public struct GoalAnchor: Codable, Equatable, Sendable {
 
 public struct GuidanceInput: Sendable {
     public let transcript: String
+    public let currentUtterance: String?
     public let goal: String?
     public let notes: String
     public let browserContext: String?
@@ -58,8 +59,10 @@ public struct GuidanceInput: Sendable {
 
     /// The caller prepares an upright JPEG within TypeSafe's documented image limits.
     public init(transcript: String, goal: String?, notes: String, browserContext: String?,
-                accessibilityContext: String?, imageJPEG: Data, sampling: BoxSampling = .single) {
+                accessibilityContext: String?, imageJPEG: Data, sampling: BoxSampling = .single,
+                currentUtterance: String? = nil) {
         self.transcript = transcript
+        self.currentUtterance = currentUtterance
         self.goal = goal
         self.notes = notes
         self.browserContext = browserContext

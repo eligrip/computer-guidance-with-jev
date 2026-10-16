@@ -19,9 +19,18 @@ enum CoreRegressionHarness {
         throw Failure(message: message)
     }
 
-    static func main() async throws {
+    static func main() async {
+        do { try await run() }
+        catch {
+            fputs("FAIL after \(checks) core checks: \(error)\n", stderr)
+            exit(1)
+        }
+    }
+
+    static func run() async throws {
         try ScreenSceneChecks.run { try expect($0, $1) }
         try TranscriptChecks.run { try expect($0, $1) }
+        try GoalFocusChecks.run { try expect($0, $1) }
         var goalOrder = GoalResponseOrder()
         try expect(GoalResponseOrder.echoesStaleAnchor(selection: "Open Mail", requestedPrevious: "Open Mail", currentGoal: "Open Maps"),
                    "Parallel keep-previous response restored a superseded goal")

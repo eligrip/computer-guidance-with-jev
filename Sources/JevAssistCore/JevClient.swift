@@ -77,6 +77,7 @@ public struct JevClient: Sendable {
     public func guidance(_ input: GuidanceInput) async throws -> GuidanceResult {
         let response = try await send(operation: "guidance", input: [
             "transcript": input.transcript, "goal": input.goal as Any? ?? NSNull(), "notes": input.notes,
+            "current_utterance": input.currentUtterance as Any? ?? NSNull(),
             "browser_context": input.browserContext as Any? ?? NSNull(),
             "accessibility_context": input.accessibilityContext as Any? ?? NSNull(),
             "image_jpeg_base64": input.imageJPEG.base64EncodedString(), "sample_count": input.sampling.sampleCount
@@ -96,9 +97,10 @@ public struct JevClient: Sendable {
         return GuidanceResult(box: result.box, confidence: result.confidence, presence: result.presence, ensemble: result.ensemble)
     }
 
-    public func inferGoal(transcript: String, previousGoal: String?) async throws -> String? {
+    public func inferGoal(transcript: String, previousGoal: String?, currentUtterance: String? = nil) async throws -> String? {
         let response = try await send(operation: "goal", input: [
-            "transcript": transcript, "previous_goal": previousGoal as Any? ?? NSNull()
+            "transcript": transcript, "previous_goal": previousGoal as Any? ?? NSNull(),
+            "current_utterance": currentUtterance as Any? ?? NSNull()
         ])
         struct Result: Decodable { let goal: String? }
         let result: Result = try decodeResult(response)

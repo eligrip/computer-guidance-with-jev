@@ -4,11 +4,14 @@ import SwiftUI
 struct HighlightStylePickerView: View {
     @ObservedObject var session: SessionController
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("How should we point?").font(.system(size: 24, weight: .semibold))
-            Text("Choose the highlight that is easiest for you to see.")
+            Text(reduceMotion
+                ? "Choose the steady highlight that is easiest for you to see."
+                : "Choose the highlight that is easiest for you to see. New guidance gives one brief pulse, then stays steady.")
                 .font(.system(size: 15)).foregroundStyle(.secondary)
             ForEach(HighlightStyle.allCases) { style in
                 Button {
@@ -64,6 +67,6 @@ private final class HighlightSampleView: NSView {
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.labelColor]
         let size = text.size(withAttributes: attributes)
         text.draw(at: CGPoint(x: button.midX - size.width / 2, y: button.midY - size.height / 2), withAttributes: attributes)
-        HighlightDrawing.draw(style: style, target: button.insetBy(dx: -4, dy: -4))
+        HighlightDrawing.draw(style: style, target: HighlightDrawing.visualTarget(for: button))
     }
 }

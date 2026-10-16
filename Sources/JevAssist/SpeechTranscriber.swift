@@ -7,6 +7,8 @@ import JevAssistCore
 @MainActor
 final class SpeechTranscriber {
     var onText: ((String) -> Void)?
+    var onUpdate: ((SpeechTranscriptUpdate) -> Void)?
+    var onRecognitionTelemetry: ((SpeechRecognitionTelemetry) -> Void)?
     var onStatus: ((String) -> Void)?
     private let engine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
@@ -26,7 +28,7 @@ final class SpeechTranscriber {
         stop()
         self.configuration = configuration
         history.reset(retaining: retained)
-        onText?(fullTranscript)
+        emit(history.update)
         failures = 0
         running = true
         let sessionID = generation
@@ -79,6 +81,7 @@ final class SpeechTranscriber {
         history.beginSegment(recognitionID)
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.addsPunctuation = true
         request.requiresOnDeviceRecognition = configuration.requiresOnDeviceRecognition
         request.taskHint = .dictation
         self.request = request
@@ -91,6 +94,7 @@ final class SpeechTranscriber {
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
         tapInstalled = true
         engine.prepare()
+        let audioStartedAt = ProcessInfo.processInfo.systemUptime
         do { try engine.start() }
         catch {
             tearDownAudio()
@@ -100,14 +104,32 @@ final class SpeechTranscriber {
         let route = configuration.requiresOnDeviceRecognition ? "on this Mac" : "with Apple · online recognition allowed"
         onStatus?("Listening in \(configuration.languageName) \(route)")
         recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            let callbackReceivedAt = ProcessInfo.processInfo.systemUptime
             Task { @MainActor in
                 guard let self, self.running, self.generation == recognitionID else { return }
                 if let result {
+                    let processingStartedAt = ProcessInfo.processInfo.systemUptime
                     let transcription = result.bestTranscription
-                    if self.history.updatePartial(transcription.formattedString, segmentID: recognitionID,
-                                                  audioRange: Self.audioRange(for: transcription)) {
-                        self.onText?(self.fullTranscript)
+                    let segments = transcription.segments.map {
+                        SpeechTranscriptSegmentTiming(start: $0.timestamp, duration: $0.duration, sourceRange: $0.substringRange)
                     }
+                    let audioRange = SpeechTranscriptAudioRange.covering(segments)
+                    let utterance = SpeechTranscriptFocus.currentUtterance(in: transcription.formattedString, segments: segments)
+                    let changed = self.history.updatePartial(transcription.formattedString, segmentID: recognitionID,
+                                                             audioRange: audioRange, currentUtterance: utterance)
+                    let update = self.history.update
+                    if changed { self.emit(update) }
+                    let audioDelay = audioRange.map { (callbackReceivedAt - audioStartedAt - $0.end) * 1000 }
+                    self.onRecognitionTelemetry?(SpeechRecognitionTelemetry(
+                        recognitionID: recognitionID.uuidString,
+                        callbackDelayMS: max(0, processingStartedAt - callbackReceivedAt) * 1000,
+                        processingMS: max(0, ProcessInfo.processInfo.systemUptime - processingStartedAt) * 1000,
+                        audioEndToCallbackMS: audioDelay.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil },
+                        segmentCount: transcription.segments.count,
+                        timedSegmentCount: transcription.segments.filter { $0.timestamp.isFinite && $0.duration.isFinite && $0.duration > 0 }.count,
+                        sourceCharacters: transcription.formattedString.count, transcriptCharacters: update.text.count,
+                        currentUtteranceCharacters: update.currentUtterance?.count ?? 0,
+                        isFinal: result.isFinal, emittedUpdate: changed))
                     self.failures = 0
                     if result.isFinal { self.scheduleRestart(after: 0.15); return }
                 }
@@ -138,17 +160,9 @@ final class SpeechTranscriber {
         history.text
     }
 
-    /// Apple documents segment times in the recognition request's audio stream.
-    /// Some provisional results have no useful timing; never infer a boundary
-    /// from their shorter text, confidence, or how long the user paused.
-    private static func audioRange(for transcription: SFTranscription) -> SpeechTranscriptAudioRange? {
-        let segments = transcription.segments
-        guard let first = segments.first,
-              segments.allSatisfy({ $0.timestamp.isFinite && $0.timestamp >= 0 &&
-                  $0.duration.isFinite && $0.duration > 0 }),
-              zip(segments, segments.dropFirst()).allSatisfy({ $0.timestamp <= $1.timestamp }),
-              let end = segments.map({ $0.timestamp + $0.duration }).max() else { return nil }
-        return SpeechTranscriptAudioRange(start: first.timestamp, end: end)
+    private func emit(_ update: SpeechTranscriptUpdate) {
+        if let onUpdate { onUpdate(update) }
+        else { onText?(update.text) }
     }
 
     private func scheduleRestart(after delay: Double) {

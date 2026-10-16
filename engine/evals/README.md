@@ -1,5 +1,21 @@
 # Box consensus experiment
 
+## Current utterance and stale goals
+
+`python3 engine/evals/utterance_focus.py --check` validates invented conversation
+fixtures offline. After building the release engine and generating
+`make_command_fixture.py`, use `--live` to check exact current-utterance selections
+and Box targets. `--cases` accepts a comma-separated subset; the first service
+error stops the run. No microphone or real screen is used, and results are saved
+under ignored `.build/evals`.
+
+Eight focused cases passed on October 16: an unpunctuated new task, a pronoun
+substep, a correction, a generic help follow-up, unrelated chatter, cancellation,
+and two next-step Boxes. Generic help and chatter retained the prior goal;
+actionable changes selected new verbatim text. The first cold call took 2,621 ms;
+the remaining calls took 126–221 ms. These small fixtures verify context handling,
+not end-to-end microphone or desktop response time.
+
 ## Sustained guidance comparison
 
 ```sh

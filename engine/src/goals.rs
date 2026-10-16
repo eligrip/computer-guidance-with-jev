@@ -86,6 +86,53 @@ pub fn candidates(transcript: &str) -> Vec<Candidate> {
         .collect()
 }
 
+/// Audio utterance boundaries are evidence from the recognizer, independent of
+/// punctuation or a fixed vocabulary of command prefixes. Accept only an exact
+/// latest source suffix; never accept synthesized focus text from a caller.
+fn utterance_start(transcript: &str, utterance: Option<&str>) -> Option<usize> {
+    let utterance = utterance?.trim();
+    if utterance.is_empty() {
+        return None;
+    }
+    let start = transcript.rfind(utterance)?;
+    transcript[start + utterance.len()..]
+        .trim()
+        .is_empty()
+        .then_some(start)
+}
+
+pub fn candidates_with_utterance(
+    transcript: &str,
+    utterance: Option<&str>,
+    previous_goal: Option<&str>,
+) -> Vec<Candidate> {
+    let mut values = if let Some(start) = utterance_start(transcript, utterance) {
+        let mut latest = candidates(&transcript[start..]);
+        for span in &mut latest {
+            span.source_start += start;
+            span.source_end += start;
+        }
+        latest
+    } else {
+        candidates(transcript)
+    };
+    // An earlier task remains context, but is not an alternative current goal
+    // after a newer source was selected. Returning to it supplies new words.
+    if let Some(floor) = previous_goal
+        .filter(|goal| !goal.is_empty())
+        .and_then(|goal| transcript.rfind(goal))
+    {
+        values.retain(|span| span.source_end > floor);
+    }
+    let mut seen = HashSet::new();
+    values.retain(|span| seen.insert(span.text.clone()));
+    values.truncate(16);
+    for (index, span) in values.iter_mut().enumerate() {
+        span.id = format!("source_{index}");
+    }
+    values
+}
+
 fn repeated_request_starts(text: &str) -> Vec<usize> {
     let words: Vec<_> = WORDS.find_iter(text).collect();
     let normalized: Vec<_> = words
@@ -155,8 +202,16 @@ pub struct SpeechContext<'a> {
 /// The two conversation fields form an exact partition, so history is present
 /// once and cannot masquerade as equally recent instructions. The latest clause
 /// is a small focus signal, not a generated summary or replacement for context.
+#[cfg(test)]
 pub fn speech_context<'a>(transcript: &'a str, _selected_goal: Option<&str>) -> SpeechContext<'a> {
-    let candidates = candidates(transcript);
+    speech_context_with_utterance(transcript, None)
+}
+
+pub fn speech_context_with_utterance<'a>(
+    transcript: &'a str,
+    utterance: Option<&str>,
+) -> SpeechContext<'a> {
+    let candidates = candidates_with_utterance(transcript, utterance, None);
     let latest = candidates.first();
     // A saved broad goal must not stretch the current request back over older
     // commands. History remains available separately for pronoun resolution.
@@ -434,5 +489,104 @@ mod tests {
         let values = candidates(source);
         assert_eq!(values[0].text, "download it");
         assert_eq!(values[0].source_start, source.rfind("download it").unwrap());
+    }
+
+    #[test]
+    fn utterance_boundary_excludes_an_older_unpunctuated_task() {
+        let old = "If the banner is clipped open branding";
+        let latest = "take me to volunteer roles";
+        let transcript = format!("{old} {latest}");
+        let options = candidates_with_utterance(&transcript, Some(latest), Some(old));
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].text, latest);
+        assert_eq!(options[0].source_start, old.len() + 1);
+        let focus = speech_context_with_utterance(&transcript, Some(latest));
+        assert_eq!(focus.current_user_request, latest);
+        assert_eq!(
+            format!(
+                "{}{}",
+                focus.earlier_conversation, focus.current_user_request
+            ),
+            transcript
+        );
+    }
+
+    #[test]
+    fn utterance_references_chatter_and_cancellation_keep_explicit_escape_options() {
+        let old = "Open the shared album";
+        for latest in [
+            "download it",
+            "the other attachment please",
+            "where do I click",
+            "cancel that task",
+        ] {
+            let transcript = format!("{old} {latest}");
+            let options = candidates_with_utterance(&transcript, Some(latest), Some(old));
+            assert_eq!(options[0].text, latest);
+            assert!(options.iter().all(|span| span.source_start >= old.len()));
+            assert_eq!(
+                resolve("keep_previous", &options, Some(old))
+                    .unwrap()
+                    .as_deref(),
+                Some(old)
+            );
+            assert_eq!(resolve("none", &options, Some(old)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn corrected_goal_and_unicode_focus_preserve_exact_source_offsets() {
+        let latest = "open Zoë’s 照片";
+        let transcript = format!("Earlier words. {latest}  ");
+        let options = candidates_with_utterance(
+            &transcript,
+            Some(latest),
+            Some("corrected words no longer present"),
+        );
+        assert_eq!(options[0].text, latest);
+        assert_eq!(
+            &transcript[options[0].source_start..options[0].source_end],
+            latest
+        );
+        assert_eq!(
+            speech_context_with_utterance(&transcript, Some(latest)).latest_spoken_clause,
+            latest
+        );
+    }
+
+    #[test]
+    fn invalid_or_older_focus_cannot_inject_text_or_hide_newer_speech() {
+        let transcript = "Open the album. Now download it.";
+        for invalid in ["invented focus", "Open the album.", "", " "] {
+            let options = candidates_with_utterance(transcript, Some(invalid), None);
+            assert_eq!(options[0].text, "Now download it.");
+            assert!(options.iter().all(|span| transcript.contains(&span.text)));
+        }
+    }
+
+    #[test]
+    fn repeated_request_after_cancellation_uses_new_occurrence() {
+        let latest = "Save the report";
+        let transcript = format!("{latest}. Cancel that task. {latest}");
+        let options = candidates_with_utterance(&transcript, Some(latest), None);
+        assert_eq!(options.len(), 1);
+        assert_eq!(options[0].source_start, transcript.rfind(latest).unwrap());
+        assert_eq!(
+            resolve("source_0", &options, None).unwrap().as_deref(),
+            Some(latest)
+        );
+    }
+
+    #[test]
+    fn chronological_fallback_excludes_retired_earlier_candidates() {
+        let transcript = "Open the album. Download it. The weather is pleasant.";
+        let options = candidates_with_utterance(transcript, None, Some("Download it."));
+        assert!(!options.iter().any(|span| span.text == "Open the album."));
+        assert!(options.iter().any(|span| span.text == "Download it."));
+        assert!(
+            options
+                .iter()
+                .any(|span| span.text == "The weather is pleasant.")
+        );
     }
 }

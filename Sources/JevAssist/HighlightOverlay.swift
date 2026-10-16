@@ -34,20 +34,65 @@ final class HighlightOverlay {
         }
         panel?.setFrame(cocoaRect, display: true)
         panel?.orderFrontRegardless()
+        (panel?.contentView as? HighlightView)?.beginArrival()
     }
 
-    func hide() { panel?.orderOut(nil) }
+    func hide() {
+        (panel?.contentView as? HighlightView)?.endArrival()
+        panel?.orderOut(nil)
+    }
 
     static func cocoaRect(for rect: CGRect, primaryDisplayHeight: CGFloat) -> CGRect {
-        CGRect(x: rect.minX - 6, y: primaryDisplayHeight - rect.maxY - 6,
-               width: rect.width + 12, height: rect.height + 12)
+        let padding = HighlightDrawing.overlayPadding
+        return CGRect(x: rect.minX - padding, y: primaryDisplayHeight - rect.maxY - padding,
+                      width: rect.width + 2 * padding, height: rect.height + 2 * padding)
     }
 }
 
+@MainActor
 private final class HighlightView: NSView {
     var style = HighlightStyle.softOutline
+    private var arrivalTask: Task<Void, Never>?
+    private var arrivalElapsed: TimeInterval?
+
+    func beginArrival() {
+        endArrival()
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        arrivalElapsed = 0
+        needsDisplay = true
+        let start = ProcessInfo.processInfo.systemUptime
+        arrivalTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let elapsed = ProcessInfo.processInfo.systemUptime - start
+                guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      elapsed < HighlightArrivalCue.duration else {
+                    self.arrivalElapsed = nil
+                    self.needsDisplay = true
+                    return
+                }
+                self.arrivalElapsed = elapsed
+                self.needsDisplay = true
+                try? await Task.sleep(nanoseconds: 33_000_000)
+            }
+        }
+    }
+
+    func endArrival() {
+        arrivalTask?.cancel()
+        arrivalTask = nil
+        arrivalElapsed = nil
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        HighlightDrawing.draw(style: style, target: bounds.insetBy(dx: 4, dy: 4))
+        let inset = HighlightDrawing.overlayPadding - HighlightDrawing.targetOutset
+        let target = bounds.insetBy(dx: inset, dy: inset)
+        if let elapsed = arrivalElapsed {
+            HighlightDrawing.drawArrival(target: target, elapsed: elapsed,
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        }
+        HighlightDrawing.draw(style: style, target: target)
     }
 }

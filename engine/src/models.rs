@@ -26,6 +26,7 @@ pub enum Operation {
 #[derive(Deserialize)]
 pub struct GuidanceInput {
     pub transcript: String,
+    pub current_utterance: Option<String>,
     pub goal: Option<String>,
     pub notes: String,
     pub browser_context: Option<String>,
@@ -42,6 +43,7 @@ fn default_sample_count() -> u8 {
 #[derive(Deserialize)]
 pub struct GoalInput {
     pub transcript: String,
+    pub current_utterance: Option<String>,
     pub previous_goal: Option<String>,
 }
 

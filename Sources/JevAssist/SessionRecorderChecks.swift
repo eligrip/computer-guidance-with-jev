@@ -57,6 +57,12 @@ enum SessionRecorderChecks {
             recorder.recordSetting(name: "guidance_pace", value: "fast")
             recorder.recordSetting(name: "box_sampling", value: "consensus")
             recorder.recordSetting(name: "api_key", value: "synthetic-credential-must-not-appear")
+            recorder.recordSpeech(SpeechRecognitionTelemetry(recognitionID: "synthetic-stream", callbackDelayMS: 3,
+                processingMS: 1, audioEndToCallbackMS: 170, segmentCount: 4, timedSegmentCount: 3,
+                sourceCharacters: 28, transcriptCharacters: 64, currentUtteranceCharacters: 28,
+                isFinal: false, emittedUpdate: true))
+            recorder.recordGoal(sequence: 1, disposition: "dispatched")
+            recorder.recordGoal(sequence: 1, latencyMS: 145, disposition: "updated")
             recorder.recordDecision(requestID: "invalid-numeric", frameID: nil,
                                     result: GuidanceResult(box: nil, confidence: .nan, presence: .infinity,
                                                            ensemble: BoxEnsemble(samples: [BoxSample(box: nil, confidence: .nan, presence: .infinity)],
@@ -76,6 +82,13 @@ enum SessionRecorderChecks {
             expect(events.enumerated().allSatisfy { ($0.element["sequence"] as? Int) == $0.offset + 1 }, "replay sequence preserves event order")
             expect(events.first?["kind"] as? String == "session_started" && events.last?["kind"] as? String == "session_stopped", "recording has explicit session boundaries")
             let contexts = events.filter { $0["kind"] as? String == "context" }
+            let speech = events.first { $0["kind"] as? String == "speech_recognition" }?["speech"] as? [String: Any]
+            expect(speech?["audioEndToCallbackMS"] as? Double == 170 && speech?["callbackDelayMS"] as? Double == 3,
+                   "speech telemetry distinguishes recognition and main-actor delay")
+            expect(speech?["text"] == nil && speech?["transcript"] == nil, "recognition timing contains no extra speech text")
+            let goals = events.filter { $0["kind"] as? String == "goal" }
+            expect(goals.count == 2 && goals.first?["requestID"] as? String == goals.last?["requestID"] as? String
+                && goals.last?["latencyMS"] as? Double == 145, "goal diagnostics link dispatch and measured reply latency")
             expect(contexts.count == 4 && contexts[2]["goal"] == nil, "context dedup retains goal selection and clearing")
             expect((contexts.last?["transcript"] as? String)?.count == TranscriptContext.maximumCharacters, "recordings retain the complete bounded conversation context")
             let decision = events.first { $0["requestID"] as? String == "synthetic-request" }!

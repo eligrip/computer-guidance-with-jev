@@ -241,7 +241,11 @@ impl Engine {
         request: &Request,
         input: &GoalInput,
     ) -> Result<Option<String>, EngineError> {
-        let candidates = goals::candidates(&input.transcript);
+        let candidates = goals::candidates_with_utterance(
+            &input.transcript,
+            input.current_utterance.as_deref(),
+            input.previous_goal.as_deref(),
+        );
         if candidates.is_empty() {
             return Ok(input.previous_goal.clone());
         }
@@ -336,7 +340,8 @@ fn decode_jpeg(encoded: &str) -> Result<Vec<u8>, EngineError> {
 }
 
 fn guidance_payload(model: &str, input: &GuidanceInput, image_id: &str) -> Value {
-    let speech = goals::speech_context(&input.transcript, input.goal.as_deref());
+    let speech =
+        goals::speech_context_with_utterance(&input.transcript, input.current_utterance.as_deref());
     json!({
         "model": model,
         "state": {
@@ -378,7 +383,8 @@ fn goal_payload(model: &str, input: &GoalInput, candidates: &[Candidate]) -> Val
                     "source_end": candidate.source_end }),
         );
     }
-    let speech = goals::speech_context(&input.transcript, input.previous_goal.as_deref());
+    let speech =
+        goals::speech_context_with_utterance(&input.transcript, input.current_utterance.as_deref());
     json!({
         "model": model,
         "state": { "current_user_request": speech.current_user_request, "earlier_conversation": speech.earlier_conversation,

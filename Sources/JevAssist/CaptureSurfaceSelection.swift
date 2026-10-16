@@ -43,11 +43,7 @@ enum CaptureSurfaceSelection {
             surface.alpha > 0 && surface.bounds.width > 10 && surface.bounds.height > 10 &&
             [surface.bounds.minX, surface.bounds.minY, surface.bounds.width, surface.bounds.height].allSatisfy(\.isFinite)
         }
-        let mainIndex = eligible.firstIndex {
-            $0.processID == foregroundPID && $0.layer == 0 && $0.bounds.width > 100 && $0.bounds.height > 80
-        } ?? eligible.firstIndex {
-            $0.processID == foregroundPID && $0.layer == 0
-        }
+        let mainIndex = mainSurfaceIndex(eligible, foregroundPID: foregroundPID, displays: displays)
         let main = mainIndex.map { eligible[$0] }
         let display: CGRect
         if let main, let largest = displays.max(by: { area($0.intersection(main.bounds)) < area($1.intersection(main.bounds)) }),
@@ -91,6 +87,32 @@ enum CaptureSurfaceSelection {
             visible.width <= display.width * 0.35 &&
             (abs(visible.minX - display.minX) <= edgeTolerance || abs(visible.maxX - display.maxX) <= edgeTolerance)
         return horizontal || vertical
+    }
+
+    private static func mainSurfaceIndex(_ surfaces: [CaptureSurface], foregroundPID: pid_t,
+                                         displays: [CGRect]) -> Int? {
+        guard let first = surfaces.firstIndex(where: {
+            $0.processID == foregroundPID && $0.layer == 0 && $0.bounds.width > 100 && $0.bounds.height > 80
+        }) ?? surfaces.firstIndex(where: { $0.processID == foregroundPID && $0.layer == 0 }) else { return nil }
+        let front = surfaces[first].bounds
+        guard let display = displays.max(by: { area($0.intersection(front)) < area($1.intersection(front)) }),
+              area(front.intersection(display)) > 0,
+              front.width >= 400, front.width >= front.height * 4,
+              front.height <= min(220, display.height * 0.25) else { return first }
+        // Browsers can expose a shallow toolbar as a separate normal-level
+        // window ahead of their main content window. Anchoring that strip alone
+        // excludes the actual page from the composite. Prefer the substantial
+        // same-app window directly beneath and containing the strip, while the
+        // existing prefix selection keeps the toolbar/popovers above it.
+        // Do not simply pick the largest window: another document may be open
+        // beside this one, and a real foreground dialog must remain its anchor.
+        return surfaces.indices.dropFirst(first + 1).first { index in
+            let candidate = surfaces[index]
+            return candidate.processID == foregroundPID && candidate.layer == 0
+                && candidate.bounds.height >= max(front.height * 2, display.height * 0.35)
+                && candidate.bounds.width >= front.width * 0.9
+                && area(candidate.bounds.intersection(front)) >= area(front) * 0.9
+        } ?? first
     }
 
     private static func area(_ rect: CGRect) -> CGFloat {

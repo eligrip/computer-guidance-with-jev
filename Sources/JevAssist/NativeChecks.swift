@@ -48,7 +48,7 @@ enum NativeChecks {
         expect(padded.screenRect(for: paddedBox)?.width == 1000, "padding is removed from coordinates")
         expect(padded.screenRect(for: NormalizedBox(top: 0, bottom: 0.1, left: 0, right: 0.1)) == nil, "padding targets rejected")
         let otherDisplay = HighlightOverlay.cocoaRect(for: CGRect(x: -1200, y: -300, width: 100, height: 60), primaryDisplayHeight: 900)
-        expect(otherDisplay.minX == -1206 && otherDisplay.minY == 1134, "display above and left maps into AppKit space")
+        expect(otherDisplay.minX == -1200 - HighlightDrawing.overlayPadding && otherDisplay.minY == 1140 - HighlightDrawing.overlayPadding, "display above and left maps into AppKit space")
         for (width, height) in [(30, 40), (1900, 100), (4000, 2000), (500, 500)] {
             let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                     space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
@@ -213,6 +213,7 @@ enum NativeChecks {
         }
         SetupChecks.run { expect($0, $1) }
         checks += CaptureSurfaceChecks.run()
+        checks += HighlightAppearanceChecks.run()
         checks += DockCaptureChecks.run()
         checks += SessionRecorderChecks.run()
         print("Native checks passed: \(checks)")

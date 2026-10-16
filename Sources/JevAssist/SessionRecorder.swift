@@ -35,7 +35,7 @@ final class SessionRecorder {
     private let budget: RecordingQueueBudget
     private var activeToken: UUID?
     private var startedAt: TimeInterval = 0
-    private var lastContext: (String, String?)?
+    private var lastContext: (String, String?, String?)?
 
     init(rootURL: URL? = nil, limits: RecordingLimits = RecordingLimits()) {
         writer = SessionRecordingWriter(root: rootURL ?? Self.recordingsURL, limits: limits)
@@ -85,14 +85,30 @@ final class SessionRecorder {
         return enqueue(cost: jpeg.count + 4096) { try $0.appendFrame(entry, jpeg: jpeg) } ? frameID : nil
     }
 
-    func recordContext(transcript: String, goal: String?) {
+    func recordContext(transcript: String, goal: String?, currentUtterance: String? = nil) {
         let text = TranscriptContext.retainingRecent(transcript)
         let anchor = goal.map { String($0.prefix(2_000)) }
-        guard lastContext?.0 != text || lastContext?.1 != anchor else { return }
+        let utterance = currentUtterance.flatMap { text.contains($0) ? String($0.prefix(4_000)) : nil }
+        guard lastContext?.0 != text || lastContext?.1 != anchor || lastContext?.2 != utterance else { return }
         var entry = event("context")
         entry.transcript = text
         entry.goal = anchor
-        if enqueue(entry) { lastContext = (text, anchor) }
+        entry.currentUtterance = utterance
+        if enqueue(entry) { lastContext = (text, anchor, utterance) }
+    }
+
+    func recordSpeech(_ telemetry: SpeechRecognitionTelemetry) {
+        var entry = event("speech_recognition")
+        entry.speech = telemetry
+        _ = enqueue(entry)
+    }
+
+    func recordGoal(sequence: UInt64, latencyMS: Double? = nil, disposition: String, reason: String? = nil) {
+        var entry = event("goal", reason: reason)
+        entry.requestID = "goal-\(sequence)"
+        entry.latencyMS = latencyMS?.finiteValue
+        entry.disposition = disposition
+        _ = enqueue(entry)
     }
 
     func recordDecision(requestID: String, frameID: String?, result: GuidanceResult?, latencyMS: Double,
@@ -224,6 +240,8 @@ struct RecordingEvent: Codable {
     var requestID: String?
     var transcript: String?
     var goal: String?
+    var currentUtterance: String?
+    var speech: SpeechRecognitionTelemetry?
     var confidence: Double?
     var presence: Double?
     var box: NormalizedBox?

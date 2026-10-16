@@ -37,6 +37,32 @@ enum CaptureSurfaceChecks {
         expect(CaptureSurfaceSelection.select([dock], foregroundPID: 99, dockPIDs: [], displays: [display], pointer: .zero) == nil,
                "Dock process identity must be verified")
 
+        // Recorded failure geometry: a separate1470×132 normal-level toolbar
+        // appeared ahead of the browser page and became the sole app capture.
+        let browserDisplay = CGRect(x: 0, y: 0, width: 1470, height: 956)
+        let toolbar = surface(30, rect: CGRect(x: 0, y: 36, width: 1470, height: 132))
+        let browser = surface(31, rect: CGRect(x: 0, y: 36, width: 1470, height: 920))
+        let browserDock = surface(32, pid: 20, layer: dockLayer, rect: CGRect(x: 99, y: 881, width: 1272, height: 74))
+        let otherDocument = surface(33, rect: CGRect(x: 1500, y: 36, width: 1470, height: 920))
+        let expanded = CaptureSurfaceSelection.select([toolbar, browserDock, browser, otherDocument], foregroundPID: 10,
+            dockPIDs: [20], displays: [browserDisplay], pointer: .zero)!
+        expect(expanded.anchor.id == browser.id && expanded.bounds == browser.bounds,
+               "shallow browser toolbar does not exclude the main page beneath it")
+        expect(expanded.surfaces.map(\.id) == [30, 32, 31], "browser toolbar and Dock remain composited above the selected page")
+        let noBacking = CaptureSurfaceSelection.select([toolbar, browserDock, otherDocument], foregroundPID: 10,
+            dockPIDs: [20], displays: [browserDisplay], pointer: .zero)!
+        expect(noBacking.anchor.id == toolbar.id && !noBacking.surfaces.contains(where: { $0.id == otherDocument.id }),
+               "strip fallback never selects a disjoint same-app document")
+        let foreignBacking = surface(34, pid: 30, rect: browser.bounds)
+        let foreignExcluded = CaptureSurfaceSelection.select([toolbar, foreignBacking], foregroundPID: 10,
+            dockPIDs: [], displays: [browserDisplay], pointer: .zero)!
+        expect(foreignExcluded.surfaces.map(\.id) == [toolbar.id], "toolbar fallback cannot broaden to another app")
+        let actualDialog = surface(35, rect: CGRect(x: 300, y: 150, width: 500, height: 350))
+        let dialogSelection = CaptureSurfaceSelection.select([actualDialog, browser], foregroundPID: 10,
+            dockPIDs: [], displays: [browserDisplay], pointer: .zero)!
+        expect(dialogSelection.anchor.id == actualDialog.id && dialogSelection.surfaces.map(\.id) == [actualDialog.id],
+               "a substantial foreground dialog remains the selected app window")
+
         let leftDisplay = CGRect(x: -1440, y: -200, width: 1440, height: 900)
         let leftMain = surface(11, rect: CGRect(x: -1300, y: -100, width: 900, height: 600))
         let leftDock = surface(12, pid: 20, layer: dockLayer, rect: CGRect(x: -1440, y: 10, width: 80, height: 500))
