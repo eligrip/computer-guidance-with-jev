@@ -36,6 +36,14 @@ struct SetupRecoveryState: Equatable {
         if !screenSettingsOpened { return .openSettings }
         return restartedThisBuild ? .repairSettings : .restart
     }
+
+    var secondaryScreenAction: ScreenSetupAction? {
+        switch screenAction {
+        case .restart: return .openSettings
+        case .repairSettings: return .restart
+        default: return nil
+        }
+    }
 }
 
 /// Pure readiness policy, independently testable without requesting permission,
@@ -105,7 +113,11 @@ final class SetupCoordinator: ObservableObject {
     }
 
     var canOpenScreenSettings: Bool {
-        readiness.nextStep == .screen && recovery.screenAction == .restart
+        readiness.nextStep == .screen && recovery.secondaryScreenAction == .openSettings
+    }
+
+    var canRestartAfterScreenRepair: Bool {
+        readiness.nextStep == .screen && recovery.secondaryScreenAction == .restart
     }
 
     func configure(languageID: String, mode: SpeechRecognitionMode) {
@@ -153,7 +165,7 @@ final class SetupCoordinator: ObservableObject {
             case .restart:
                 return "If the Jev Assist switch is already on, restart the app to apply access. Otherwise, open Screen Recording below and turn it on first."
             case .repairSettings:
-                return "This copy of Jev Assist still can’t use screen access. In Screen Recording, turn Jev Assist off and back on. If your Mac asks, choose Quit & Reopen."
+                return "This copy of Jev Assist still can’t use screen access. Turn Jev Assist on in Screen Recording; if it is already on, turn it off and back on. Then restart below."
             }
         case .accessibility:
             return requestedAccessibility
@@ -280,6 +292,14 @@ final class SetupCoordinator: ObservableObject {
         screenSettingsOpened = true
         UserDefaults.standard.set(true, forKey: "setupOpenedScreenSettings")
         openSettings("com.apple.preference.security?Privacy_ScreenCapture")
+    }
+
+    func restartAfterScreenRepair() {
+        guard !isRequesting else { return }
+        refresh()
+        guard canRestartAfterScreenRepair else { return }
+        notice = nil
+        restartApp()
     }
 
     private func restartApp() {

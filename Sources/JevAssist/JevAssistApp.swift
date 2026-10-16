@@ -84,6 +84,34 @@ private struct SessionView: View {
     @State private var showingHighlightStyles = false
 
     var body: some View {
+        Group {
+            if showingSetup {
+                ScrollView {
+                    SetupView(setup: setup, readyActionTitle: session.isRunning ? "Done" : "Start help session",
+                              isHelpSessionActive: session.isRunning, onReady: {
+                        showingSetup = false
+                        if !session.isRunning { onStart() }
+                    }, onClose: { showingSetup = false })
+                }.frame(width: 440, height: 640)
+            } else {
+                sessionContent
+            }
+        }
+        .sheet(isPresented: $showingSpeechSettings) { SpeechSettingsView(session: session) }
+        .sheet(isPresented: $showingHighlightStyles) { HighlightStylePickerView(session: session) }
+        .onChange(of: showingSetup) {
+            UserDefaults.standard.set($0, forKey: "setupInProgress")
+            onSetupVisibilityChanged($0)
+        }
+        .onChange(of: session.speechLanguageID) { _ in refreshSetup() }
+        .onChange(of: session.speechMode) { _ in refreshSetup() }
+        .onAppear {
+            refreshSetup()
+            onSetupVisibilityChanged(showingSetup)
+        }
+    }
+
+    private var sessionContent: some View {
         ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
@@ -172,25 +200,6 @@ private struct SessionView: View {
         }
         .padding(24).frame(width: 440)
         }.frame(width: 440, height: 640)
-        .sheet(isPresented: $showingSpeechSettings) { SpeechSettingsView(session: session) }
-        .sheet(isPresented: $showingHighlightStyles) { HighlightStylePickerView(session: session) }
-        .sheet(isPresented: $showingSetup) {
-            SetupView(setup: setup, readyActionTitle: session.isRunning ? "Done" : "Start help session",
-                      isHelpSessionActive: session.isRunning, onReady: {
-                showingSetup = false
-                if !session.isRunning { onStart() }
-            }, onClose: { showingSetup = false })
-        }
-        .onChange(of: showingSetup) {
-            UserDefaults.standard.set($0, forKey: "setupInProgress")
-            onSetupVisibilityChanged($0)
-        }
-        .onChange(of: session.speechLanguageID) { _ in refreshSetup() }
-        .onChange(of: session.speechMode) { _ in refreshSetup() }
-        .onAppear {
-            refreshSetup()
-            onSetupVisibilityChanged(showingSetup)
-        }
     }
 
     private func sectionLabel(_ label: String) -> some View {

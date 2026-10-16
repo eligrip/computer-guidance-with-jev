@@ -64,6 +64,10 @@ struct SetupView: View {
                 Button("Open Screen Recording instead") { setup.openScreenSettings() }
                     .buttonStyle(.link).font(.system(size: 14))
                     .disabled(setup.isRequesting)
+            } else if setup.canRestartAfterScreenRepair {
+                Button("Restart Jev Assist") { setup.restartAfterScreenRepair() }
+                    .buttonStyle(.link).font(.system(size: 14))
+                    .disabled(setup.isRequesting)
             }
 
             Text(isHelpSessionActive ? "Your help session is still active. We’ll check setup as you make changes." :

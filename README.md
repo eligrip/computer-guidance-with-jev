@@ -22,7 +22,7 @@ python3 scripts/local-signing.py setup
 The setup helper reads the API key without echoing it and writes an ignored `.env.local` with owner-only permissions. The app can read that file in this checkout; a key entered in the app's settings is stored in macOS Keychain. Never put a key into the browser extension.
 
 1. Choose **Start help session**. If setup is needed, the app walks you through three groups: **Screen access**, **Accessibility**, and **Voice**.
-2. Follow the single next-step button. Already-granted access gets a checkmark. Voice combines microphone access, speech permission, and local Dictation setup. The app checks automatically when you return from System Settings and resumes setup after a required restart.
+2. Follow the single next-step button. Already-granted access gets a checkmark. Voice combines microphone access, speech permission, and local Dictation setup. Setup stays in the main window so it cannot block macOS’s **Quit & Reopen** action. The app checks automatically when you return from System Settings and resumes setup after a required restart.
 3. When all three are ready, choose **Start help session**, open the app you want help with, and talk naturally.
 
 You can also type a thought into the panel. The menu-bar icon opens session controls; **Stop help session** ends capture and transcription and removes the box.
@@ -41,7 +41,7 @@ On a development Mac running macOS 14.5, enabling English (US) Dictation changed
 
 Before testing permissions on your development Mac, run `python3 scripts/local-signing.py setup` once, then rebuild. This creates a stable local signing certificate in an ignored, owner-only `.local-signing` directory. The helper uses an isolated password-protected keychain, temporarily adds it to the signing search list, and restores that list afterward. It does not change certificate trust or macOS permissions. Future builds reuse this identity so their designated requirement remains stable. Keep this directory between builds; its private material must never be committed or shared.
 
-Switching from an earlier ad-hoc build may require one final permission refresh. Setup offers **Restart Jev Assist** to apply Screen Recording changes. If access is still unavailable after that restart, it explains how to refresh the existing Jev Assist switch instead of repeatedly offering the same restart. Completed permissions always skip ahead automatically. Without a local identity, builds remain ad-hoc and print a warning that permissions may not survive changes. For distribution, use an Apple-issued identity through `JEV_ASSIST_SIGNING_IDENTITY`.
+Switching from an earlier ad-hoc build may require one final permission refresh. Setup offers **Restart Jev Assist** to apply Screen Recording changes, and keeps restart available after permission repair. If a switch is on but access remains unavailable after restarting, macOS may still hold the previous build’s signing requirement: quit Jev Assist, remove only its entry from the affected permission list, and add `dist/JevAssist.app` again. Toggling an old entry off and on does not always replace that requirement. Completed permissions always skip ahead automatically. Without a local identity, builds remain ad-hoc and print a warning that permissions may not survive changes. For distribution, use an Apple-issued identity through `JEV_ASSIST_SIGNING_IDENTITY`.
 
 ## Browser context
 
