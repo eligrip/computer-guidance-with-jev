@@ -54,16 +54,18 @@ public struct GuidanceInput: Sendable {
     public let browserContext: String?
     public let accessibilityContext: String?
     public let imageJPEG: Data
+    public let sampling: BoxSampling
 
     /// The caller prepares an upright JPEG within TypeSafe's documented image limits.
     public init(transcript: String, goal: String?, notes: String, browserContext: String?,
-                accessibilityContext: String?, imageJPEG: Data) {
+                accessibilityContext: String?, imageJPEG: Data, sampling: BoxSampling = .single) {
         self.transcript = transcript
         self.goal = goal
         self.notes = notes
         self.browserContext = browserContext
         self.accessibilityContext = accessibilityContext
         self.imageJPEG = imageJPEG
+        self.sampling = sampling
     }
 }
 
@@ -72,10 +74,12 @@ public struct GuidanceResult: Equatable, Sendable {
     public let box: NormalizedBox?
     public let confidence: Double
     public let presence: Double
+    public let ensemble: BoxEnsemble?
 
-    public init(box: NormalizedBox?, confidence: Double, presence: Double) {
+    public init(box: NormalizedBox?, confidence: Double, presence: Double, ensemble: BoxEnsemble? = nil) {
         self.box = box
         self.confidence = confidence
         self.presence = presence
+        self.ensemble = ensemble
     }
 }

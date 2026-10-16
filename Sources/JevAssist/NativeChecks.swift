@@ -107,6 +107,13 @@ enum NativeChecks {
         expect(GuidancePace.fast.canDispatch(inFlight: 1, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance immediately fills a completed request slot")
         expect(!GuidancePace.fast.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.05), retryAfter: .distantPast, now: now), "fast guidance honors its cadence")
         expect(!GuidancePace.balanced.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.15), retryAfter: .distantPast, now: now), "balanced guidance honors its cadence")
+        expect(BoxSampling.restored(nil) == .single && BoxSampling.restored("consensus") == .consensus, "three checks is a persistent opt-in experiment")
+        expect(BoxSampling.consensus.sampleCount == 3, "consensus requests exactly three answers")
+        for pace in GuidancePace.allCases {
+            expect(pace.canDispatch(inFlight: 0, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now, sampling: .consensus), "consensus starts a fresh three-call group")
+            expect(!pace.canDispatch(inFlight: 1, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now, sampling: .consensus), "consensus never overlaps two three-call groups")
+            expect(!pace.canDispatch(inFlight: 0, lastDispatch: oldDispatch, retryAfter: now.addingTimeInterval(1), now: now, sampling: .consensus), "consensus honors retry-after")
+        }
         SetupChecks.run { expect($0, $1) }
         checks += CaptureSurfaceChecks.run()
         checks += DockCaptureChecks.run()

@@ -63,5 +63,57 @@ function scrub(index) { element('scrub').value = String(index); element('scrub')
   scrub(1);
   assert.equal(element('screen').hidden, true, 'Dropped evidence must not reuse an unrelated earlier screenshot');
   assert.equal(element('candidate').hidden, true);
-  console.log('Offline recording review checks passed: text safety, local-only images, replay mapping, suppression, clear, partial log.');
+
+  const ensemble = {method: 'weighted_agreement', selected_indices: [0, 1], iou_threshold: .5, samples: [
+    {box: {left: .1, right: .2, top: .3, bottom: .5}, confidence: .81, presence: .91},
+    {box: {left: .14, right: .24, top: .3, bottom: .5}, confidence: .79, presence: .9},
+    {box: {left: .7, right: .9, top: .7, bottom: .9}, confidence: .99, presence: .95}
+  ]};
+  const consensusDecision = {kind: 'decision', frameID: 'fixture', disposition: 'displayed', reason: 'accepted', ensemble,
+    box: {left: .135, right: .235, top: .3, bottom: .5}};
+  await load([frame, consensusDecision]);
+  scrub(1);
+  for (let i = 0; i < 3; i++) assert.equal(element('sample'+i).hidden, false, `Original sample ${i} must be visible`);
+  assert.equal(element('sample0').style.borderStyle, 'solid');
+  assert.equal(element('sample2').style.borderStyle, 'dotted');
+  assert.match(element('sampleRow0').textContent, /selected\nConfidence 81.0% · presence 91.0%/);
+  assert.match(element('sampleRow2').textContent, /excluded\nConfidence 99.0% · presence 95.0%/);
+  assert.match(element('ensembleSummary').textContent, /weighted agreement\nSelected: 1, 2 · IoU threshold 0.50/);
+  assert.ok(Math.abs(parseFloat(element('candidate').style.left) - 13.5) < 1e-8,
+    'The final recorded box must not be recomputed from its samples by the viewer');
+  assert.ok(Math.abs(parseFloat(element('sample2').style.left) - 70) < 1e-8, 'Excluded outlier retains original geometry');
+  element('screen').listeners.error();
+  for (const id of ['screen', 'held', 'candidate', 'sample0', 'sample1', 'sample2']) assert.equal(element(id).hidden, true);
+
+  await load([frame, {...consensusDecision, frameID: 'dropped-frame'}]);
+  scrub(1);
+  for (const id of ['screen', 'candidate', 'sample0', 'sample1', 'sample2']) assert.equal(element(id).hidden, true,
+    'Consensus evidence cannot be drawn over an unrelated earlier screenshot');
+  assert.equal(element('ensembleCard').hidden, false, 'Sample probabilities remain inspectable when the image was dropped');
+  assert.match(element('ensembleSummary').textContent, /screenshot unavailable/);
+
+  await load([frame, {...consensusDecision, box: null, disposition: 'suppressed', reason: 'no_agreement',
+    ensemble: {...ensemble, method: 'no_agreement', selected_indices: []}}]);
+  scrub(1);
+  assert.equal(element('candidate').hidden, true);
+  assert.match(element('ensembleSummary').textContent, /Selected: none/);
+  for (let i = 0; i < 3; i++) {
+    assert.equal(element('sample'+i).hidden, false);
+    assert.match(element('sampleRow'+i).textContent, /excluded/);
+  }
+
+  await load([frame, {...consensusDecision, box: null, ensemble: {...ensemble, selected_indices: [], samples: [
+    ensemble.samples[0], {box: null, confidence: .1, presence: .2},
+    {box: {left: -1, right: .2, top: .3, bottom: .5}, confidence: 'NaN', presence: .3}
+  ]}}]);
+  scrub(1);
+  assert.equal(element('sample1').hidden, true);
+  assert.equal(element('sample2').hidden, true);
+  assert.match(element('sampleRow1').textContent, /presence 20.0%\nNo box/);
+  assert.match(element('sampleRow2').textContent, /Confidence unavailable.*\nInvalid box/);
+  await load([frame, {...consensusDecision, ensemble: undefined}]);
+  scrub(1);
+  assert.equal(element('ensembleCard').hidden, true, 'Single-call events clear earlier ensemble evidence');
+  for (let i = 0; i < 3; i++) assert.equal(element('sample'+i).hidden, true);
+  console.log('Offline recording review checks passed: local-only replay, sample/consensus evidence, exclusion, missing frames, and single-call compatibility.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

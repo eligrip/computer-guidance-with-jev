@@ -26,9 +26,9 @@ final class EngineFixture {
         JevClient(apiKey: "fixture-not-a-real-key", transport: transport(timeout: timeout, mode: mode))
     }
 
-    static func input(_ text: String) -> GuidanceInput {
+    static func input(_ text: String, sampling: BoxSampling = .single) -> GuidanceInput {
         GuidanceInput(transcript: text, goal: nil, notes: "fixture notes", browserContext: "fixture browser",
-                      accessibilityContext: nil, imageJPEG: Data([0xff, 0xd8, 0xff, 0xd9]))
+                      accessibilityContext: nil, imageJPEG: Data([0xff, 0xd8, 0xff, 0xd9]), sampling: sampling)
     }
 
     private static let source = #"""
@@ -49,9 +49,12 @@ def respond(request):
         with lock:
             print("not-json", flush=True)
         return
-    if text == "rate-limit":
+    if text in ("rate-limit", "ensemble-rate-limit"):
         reply = {"id":request["id"], "ok":False,
                  "error":{"message":"private upstream content must not be exposed", "retry_after":2.5, "status":429}}
+        if text == "ensemble-rate-limit":
+            assert request["input"]["sample_count"] == 3
+            reply["error"]["completed_calls"] = 2
     elif request["op"] == "goal":
         goal = None if text == "none" else (str(os.getpid()) if text == "pid" else text)
         reply = {"id":request["id"], "ok":True, "result":{"goal":goal}}
@@ -69,6 +72,19 @@ def respond(request):
             box["top"] = 0.9
         reply = {"id":request["id"], "ok":True,
                  "result":{"box":box, "confidence":0.9, "presence":0.1 if text == "absent" else 0.95}}
+        if text.startswith("ensemble"):
+            assert request["input"]["sample_count"] == 3
+            if text != "ensemble-missing":
+                sample = {"box":box, "confidence":0.9, "presence":0.95}
+                reply["result"]["ensemble"] = {"samples":[sample,sample,sample],
+                    "selected_indices":[0,1,2], "method":"weighted_agreement", "iou_threshold":0.5}
+                if text == "ensemble-none":
+                    reply["result"].update(box=None, confidence=0, presence=0)
+                    reply["result"]["ensemble"].update(selected_indices=[], method="no_agreement")
+                if text == "ensemble-bad":
+                    reply["result"]["ensemble"]["selected_indices"] = [0,3]
+        else:
+            assert request["input"]["sample_count"] == 1
     encoded = json.dumps(reply)
     with lock:
         if text == "fragment":

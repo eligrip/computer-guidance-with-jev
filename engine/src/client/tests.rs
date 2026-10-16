@@ -164,6 +164,278 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     }
 }
 
+#[derive(Clone)]
+struct FixtureReply {
+    status: u16,
+    body: Option<Value>,
+    retry_after: Option<u32>,
+    delay_ms: u64,
+}
+
+impl FixtureReply {
+    fn success() -> Self {
+        Self {
+            status: 200,
+            body: None,
+            retry_after: None,
+            delay_ms: 80,
+        }
+    }
+}
+
+async fn concurrent_fixture_server(
+    replies: Vec<FixtureReply>,
+) -> (
+    Engine,
+    JoinHandle<Vec<Vec<u8>>>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut engine = Engine::new().unwrap();
+    engine.endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    engine.client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .retry(reqwest::retry::never())
+        .build()
+        .unwrap();
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let observed = maximum.clone();
+    let server = tokio::spawn(async move {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (active, maximum) = (active.clone(), maximum.clone());
+            tasks.push(tokio::spawn(async move {
+                let request = read_http_request(&mut stream).await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(now, Ordering::SeqCst);
+                let is_guidance = String::from_utf8_lossy(&request).contains("multipart/form-data");
+                let body = reply.body.unwrap_or_else(|| {
+                    if is_guidance { guidance_answer(0.99, 0.95) }
+                    else { goal_answer("source_0", 0.99) }
+                }).to_string();
+                let retry = reply.retry_after.map(|seconds| format!("Retry-After: {seconds}\r\n")).unwrap_or_default();
+                tokio::time::sleep(Duration::from_millis(reply.delay_ms)).await;
+                let response = format!("HTTP/1.1 {} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{retry}\r\n{body}", reply.status, body.len());
+                active.fetch_sub(1, Ordering::SeqCst);
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+                request
+            }));
+        }
+        let mut requests = Vec::new();
+        for task in tasks {
+            requests.push(task.await.unwrap());
+        }
+        requests
+    });
+    (engine, server, observed)
+}
+
+fn three_sample_request() -> Request {
+    let mut request = fixture_request("guidance");
+    let Operation::Guidance(input) = &mut request.operation else {
+        unreachable!()
+    };
+    input.sample_count = 3;
+    request
+}
+
+fn multipart_parts(request: &[u8]) -> (Value, Vec<u8>) {
+    let split = request
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap();
+    let body = &request[split + 4..];
+    let json_start = body
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let json_end = json_start
+        + body[json_start..]
+            .windows(4)
+            .position(|part| part == b"\r\n--")
+            .unwrap();
+    let payload = serde_json::from_slice(&body[json_start..json_end]).unwrap();
+    let rest = &body[json_end..];
+    let image_start = rest
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let image_end = image_start
+        + rest[image_start..]
+            .windows(4)
+            .position(|part| part == b"\r\n--")
+            .unwrap();
+    (payload, rest[image_start..image_end].to_vec())
+}
+
+#[tokio::test]
+async fn sample_count_defaults_to_one_and_other_counts_are_rejected_locally() {
+    let mut request = fixture_request("guidance");
+    let Operation::Guidance(input) = &request.operation else {
+        unreachable!()
+    };
+    assert_eq!(input.sample_count, 1);
+    let single = parse_guidance(
+        &serde_json::to_vec(&guidance_answer(0.99, 0.95)).unwrap(),
+        0.65,
+        0.25,
+    )
+    .unwrap();
+    assert!(
+        serde_json::to_value(single)
+            .unwrap()
+            .get("ensemble")
+            .is_none()
+    );
+    let engine = Engine::new().unwrap();
+    for count in [0, 2, 4, 255] {
+        let Operation::Guidance(input) = &mut request.operation else {
+            unreachable!()
+        };
+        input.sample_count = count;
+        let error = engine.execute(&request).await.unwrap_err();
+        assert!(error.message.contains("sample_count"));
+    }
+}
+
+#[tokio::test]
+async fn three_samples_overlap_and_share_identical_json_and_image() {
+    use std::sync::atomic::Ordering;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let replies = vec![FixtureReply::success(); 3];
+        let (engine, server, maximum) = concurrent_fixture_server(replies).await;
+        let result = engine.execute(&three_sample_request()).await.unwrap();
+        let ResultValue::Guidance(result) = result else {
+            unreachable!()
+        };
+        let wire = serde_json::to_value(result).unwrap();
+        assert_eq!(wire["ensemble"]["method"], "weighted_agreement");
+        assert_eq!(wire["ensemble"]["selected_indices"], json!([0, 1, 2]));
+        assert_eq!(wire["ensemble"]["iou_threshold"], 0.5);
+        assert_eq!(wire["ensemble"]["samples"].as_array().unwrap().len(), 3);
+        let requests = server.await.unwrap();
+        let first = multipart_parts(&requests[0]);
+        assert_eq!(first.1, [0xff, 0xd8, 0xff, 0xd9]);
+        assert!(
+            requests
+                .iter()
+                .all(|request| multipart_parts(request) == first)
+        );
+        assert_eq!(maximum.load(Ordering::SeqCst), 3);
+    })
+    .await
+    .expect("Concurrent three-sample fixture timed out");
+}
+
+#[tokio::test]
+async fn shared_http_limit_covers_two_groups_and_a_goal() {
+    use std::sync::atomic::Ordering;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (engine, server, maximum) =
+            concurrent_fixture_server(vec![FixtureReply::success(); 7]).await;
+        let group = three_sample_request();
+        let goal = fixture_request("goal");
+        let clone = engine.clone();
+        let (one, two, goal) = tokio::join!(
+            engine.execute(&group),
+            clone.execute(&group),
+            engine.execute(&goal)
+        );
+        assert!(one.is_ok() && two.is_ok() && goal.is_ok());
+        assert_eq!(server.await.unwrap().len(), 7);
+        assert_eq!(maximum.load(Ordering::SeqCst), 4);
+    })
+    .await
+    .expect("Global HTTP-limit fixture timed out");
+}
+
+#[tokio::test]
+async fn failed_group_waits_for_every_sample_and_preserves_the_longest_backoff() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let replies = vec![
+            FixtureReply {
+                status: 429,
+                body: Some(json!({"private": "must not echo"})),
+                retry_after: Some(2),
+                delay_ms: 10,
+            },
+            FixtureReply {
+                delay_ms: 80,
+                ..FixtureReply::success()
+            },
+            FixtureReply {
+                status: 503,
+                retry_after: Some(7),
+                delay_ms: 120,
+                ..FixtureReply::success()
+            },
+        ];
+        let (engine, server, _) = concurrent_fixture_server(replies).await;
+        let started = std::time::Instant::now();
+        let error = engine.execute(&three_sample_request()).await.unwrap_err();
+        assert!(started.elapsed() >= Duration::from_millis(120));
+        assert_eq!(error.status, Some(429));
+        assert_eq!(error.retry_after, Some(7.0));
+        assert_eq!(error.completed_calls, Some(1));
+        assert!(!error.message.contains("must not echo"));
+        assert_eq!(server.await.unwrap().len(), 3);
+    })
+    .await
+    .expect("Mixed-rate-limit fixture timed out");
+}
+
+#[tokio::test]
+async fn raw_low_presence_answer_is_retained_but_excluded_from_fusion() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let replies = vec![
+            FixtureReply {
+                body: Some(guidance_answer(0.1, 0.99)),
+                ..FixtureReply::success()
+            },
+            FixtureReply::success(),
+            FixtureReply::success(),
+        ];
+        let (engine, server, _) = concurrent_fixture_server(replies).await;
+        let ResultValue::Guidance(result) = engine.execute(&three_sample_request()).await.unwrap()
+        else {
+            unreachable!()
+        };
+        assert!(result.r#box.is_some());
+        let diagnostic = result.ensemble.unwrap();
+        assert_eq!(diagnostic.selected_indices.len(), 2);
+        assert!(
+            diagnostic
+                .samples
+                .iter()
+                .all(|sample| sample.r#box.is_some())
+        );
+        assert_eq!(
+            diagnostic
+                .samples
+                .iter()
+                .filter(|sample| sample.presence < 0.65)
+                .count(),
+            1
+        );
+        assert!(
+            diagnostic
+                .selected_indices
+                .iter()
+                .all(|&index| diagnostic.samples[index].presence >= 0.65)
+        );
+        server.await.unwrap();
+    })
+    .await
+    .expect("Raw-sample fixture timed out");
+}
+
 #[test]
 fn presence_and_confidence_gate_the_always_returned_box() {
     let low_presence = serde_json::to_vec(&guidance_answer(0.1, 0.95)).unwrap();
@@ -486,4 +758,28 @@ async fn protocol_runs_three_requests_at_a_time_and_delivers_all_ids() {
         }
         assert_eq!(observed.load(Ordering::SeqCst), 3, "Engine allows two guidance calls plus one goal call");
     }).await.expect("Bounded concurrency test timed out");
+}
+
+#[tokio::test]
+async fn rate_limit_after_two_successes_reports_completed_calls() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let replies = vec![
+            FixtureReply::success(),
+            FixtureReply::success(),
+            FixtureReply {
+                status: 429,
+                retry_after: Some(3),
+                ..FixtureReply::success()
+            },
+        ];
+        let (engine, server, _) = concurrent_fixture_server(replies).await;
+        let error = engine.execute(&three_sample_request()).await.unwrap_err();
+        assert_eq!(error.status, Some(429));
+        assert_eq!(error.retry_after, Some(3.0));
+        assert_eq!(error.completed_calls, Some(2));
+        assert_eq!(serde_json::to_value(error).unwrap()["completed_calls"], 2);
+        server.await.unwrap();
+    })
+    .await
+    .expect("Partial-success fixture timed out");
 }

@@ -9,7 +9,9 @@ public enum GuidancePace: String, CaseIterable, Identifiable, Sendable {
     public var observationInterval: UInt64 { self == .fast ? 80_000_000 : 160_000_000 }
     public static func restored(_ value: String?) -> Self { value.flatMap(Self.init(rawValue:)) ?? .fast }
 
-    public func canDispatch(inFlight: Int, lastDispatch: Date, retryAfter: Date, now: Date) -> Bool {
-        inFlight < maximumConcurrentRequests && now >= retryAfter && now.timeIntervalSince(lastDispatch) >= minimumInterval
+    public func canDispatch(inFlight: Int, lastDispatch: Date, retryAfter: Date, now: Date,
+                            sampling: BoxSampling = .single) -> Bool {
+        inFlight < sampling.maximumConcurrentBatches(pace: self) && now >= retryAfter
+            && now.timeIntervalSince(lastDispatch) >= minimumInterval
     }
 }

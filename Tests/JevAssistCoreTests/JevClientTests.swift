@@ -3,6 +3,32 @@ import XCTest
 @testable import JevAssistCore
 
 final class JevClientTests: XCTestCase {
+    func testThreeCallEvidenceAndDisagreement() async throws {
+        let fixture = try EngineFixture()
+        let client = fixture.client()
+        let result = try await client.guidance(EngineFixture.input("ensemble", sampling: .consensus))
+        XCTAssertNotNil(result.box)
+        XCTAssertEqual(result.ensemble?.selectedIndices, [0, 1, 2])
+        XCTAssertEqual(result.ensemble?.samples.count, 3)
+        let absent = try await client.guidance(EngineFixture.input("ensemble-none", sampling: .consensus))
+        XCTAssertNil(absent.box)
+        XCTAssertEqual(absent.ensemble?.method, "no_agreement")
+        for text in ["ensemble-bad", "ensemble-missing"] {
+            do {
+                _ = try await client.guidance(EngineFixture.input(text, sampling: .consensus))
+                XCTFail("Invalid comparison evidence accepted")
+            } catch is JevError { }
+        }
+        do {
+            _ = try await client.guidance(EngineFixture.input("ensemble-rate-limit", sampling: .consensus))
+            XCTFail("Partial failure was hidden")
+        } catch let error as JevError {
+            XCTAssertEqual(error.completedCalls, 2)
+            XCTAssertEqual(error.retryAfter, 2.5)
+            XCTAssertTrue(error.isRetryable)
+        }
+    }
+
     func testRustGuidanceContractAndGatedResult() async throws {
         let fixture = try EngineFixture()
         let client = fixture.client()

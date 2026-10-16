@@ -11,7 +11,7 @@ enum NativeJevSmoke {
     static func main() async {
         guard CommandLine.arguments.contains("--live") else {
             print("Opt-in required: bash scripts/smoke-native.sh --live")
-            print("This makes two Jev requests using a generated image and synthetic speech.")
+            print("Uses a generated image and synthetic speech; --consensus compares three Box requests.")
             exit(2)
         }
         do {
@@ -27,9 +27,10 @@ enum NativeJevSmoke {
                 throw SmokeFailure(message: "Goal response did not select an exact span of synthetic speech.")
             }
 
+            let sampling: BoxSampling = CommandLine.arguments.contains("--consensus") ? .consensus : .single
             let input = GuidanceInput(transcript: transcript, goal: goal, notes: "",
                                       browserContext: "Synthetic photo attachment page; one visible Save photo button.",
-                                      accessibilityContext: nil, imageJPEG: image)
+                                      accessibilityContext: nil, imageJPEG: image, sampling: sampling)
             let guidanceStart = Date()
             let result = try await client.guidance(input)
             let guidanceMilliseconds = Int(Date().timeIntervalSince(guidanceStart) * 1_000)
@@ -42,10 +43,10 @@ enum NativeJevSmoke {
             // 1000×650 coordinate space. Jev uses top-left normalized coordinates.
             let centerInsideButton = (0.25...0.75).contains(centerX)
                 && ((450.0 / 650.0)...(560.0 / 650.0)).contains(centerY)
-            let report: [String: Any] = [
+            var report: [String: Any] = [
                 "model": client.model,
                 "fixture_only": true,
-                "request_count": 2,
+                "request_count": 1 + sampling.sampleCount,
                 "image_transport": "multipart/form-data",
                 "fixture_pixels": [1000, 650],
                 "fixture_jpeg_bytes": image.count,
@@ -58,6 +59,9 @@ enum NativeJevSmoke {
                 "box": ["top": box.top, "bottom": box.bottom, "left": box.left, "right": box.right],
                 "box_center_inside_expected_button": centerInsideButton
             ]
+            if let ensemble = result.ensemble {
+                report["ensemble"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ensemble))
+            }
             let output = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
             print(String(decoding: output, as: UTF8.self))
             guard centerInsideButton else {

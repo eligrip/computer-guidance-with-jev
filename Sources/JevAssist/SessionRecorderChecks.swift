@@ -38,17 +38,29 @@ enum SessionRecorderChecks {
             let second = recorder.recordFrame(frame, generation: 2)
             expect(first != nil && second != nil && first != second, "requests receive distinct frame references")
             let box = NormalizedBox(top: 0.2, bottom: 0.4, left: 0.3, right: 0.6)
+            let ensemble = BoxEnsemble(samples: [
+                BoxSample(box: NormalizedBox(top: 0.18, bottom: 0.38, left: 0.28, right: 0.58), confidence: 0.81, presence: 0.91),
+                BoxSample(box: NormalizedBox(top: 0.22, bottom: 0.42, left: 0.32, right: 0.62), confidence: 0.79, presence: 0.9),
+                BoxSample(box: NormalizedBox(top: 0.7, bottom: 0.9, left: 0.7, right: 0.9), confidence: 0.99, presence: 0.95)
+            ], selectedIndices: [0, 1], method: "weighted_agreement", iouThreshold: 0.5)
             recorder.recordDecision(requestID: "synthetic-request", frameID: first,
-                                    result: GuidanceResult(box: box, confidence: 0.8, presence: 0.9),
+                                    result: GuidanceResult(box: box, confidence: 0.8, presence: 0.9, ensemble: ensemble),
                                     latencyMS: 145, disposition: "displayed", reason: "accepted", targetRect: frame.screenRect(for: box))
+            recorder.recordDecision(requestID: "synthetic-disagreement", frameID: second,
+                                    result: GuidanceResult(box: nil, confidence: 0, presence: 0.9,
+                                                           ensemble: BoxEnsemble(samples: ensemble.samples, selectedIndices: [], method: "no_agreement", iouThreshold: 0.5)),
+                                    latencyMS: 160, disposition: "suppressed", reason: "no_agreement")
             recorder.recordHighlight(reason: "accepted", frameID: first, box: box, targetRect: frame.screenRect(for: box))
             recorder.recordContext(transcript: "Find the synthetic attachment", goal: "synthetic attachment")
             recorder.recordContext(transcript: "Find the synthetic attachment", goal: nil)
             recorder.recordContext(transcript: String(repeating: "x", count: 30_000), goal: nil)
             recorder.recordSetting(name: "guidance_pace", value: "fast")
+            recorder.recordSetting(name: "box_sampling", value: "consensus")
             recorder.recordSetting(name: "api_key", value: "synthetic-credential-must-not-appear")
             recorder.recordDecision(requestID: "invalid-numeric", frameID: nil,
-                                    result: GuidanceResult(box: nil, confidence: .nan, presence: .infinity),
+                                    result: GuidanceResult(box: nil, confidence: .nan, presence: .infinity,
+                                                           ensemble: BoxEnsemble(samples: [BoxSample(box: nil, confidence: .nan, presence: .infinity)],
+                                                                                 selectedIndices: [], method: "invalid_fixture", iouThreshold: 0.5)),
                                     latencyMS: .nan, disposition: "suppressed", reason: "invalid_fixture")
             recorder.stop()
             expect(recorder.recordFrame(frame, generation: 3) == nil, "stopped sessions admit no screenshots")
@@ -69,7 +81,22 @@ enum SessionRecorderChecks {
             let decision = events.first { $0["requestID"] as? String == "synthetic-request" }!
             expect(decision["frameID"] as? String == first && decision["latencyMS"] as? Double == 145, "decisions link exact frames and latency")
             expect(decision["box"] != nil && decision["targetRect"] != nil && decision["presence"] as? Double == 0.9, "replay includes model and desktop target coordinates")
+            let recordedEnsemble = decision["ensemble"] as! [String: Any]
+            let decodedEnsemble = try JSONDecoder().decode(BoxEnsemble.self, from: JSONSerialization.data(withJSONObject: recordedEnsemble))
+            expect(decodedEnsemble == ensemble, "recording preserves every original sample box and probability in order")
+            expect(recordedEnsemble["selected_indices"] as? [Int] == [0, 1] && recordedEnsemble["iou_threshold"] as? Double == 0.5,
+                   "recorded consensus retains snake-case selected indices and IoU threshold")
+            let recordedFinal = try JSONDecoder().decode(NormalizedBox.self, from: JSONSerialization.data(withJSONObject: decision["box"]!))
+            expect(recordedFinal == box, "sample recording does not replace or recompute the final box")
+            let disagreement = events.first { $0["requestID"] as? String == "synthetic-disagreement" }!
+            expect(disagreement["box"] == nil && (disagreement["ensemble"] as? [String: Any])?["method"] as? String == "no_agreement",
+                   "suppressed disagreement keeps its original sample evidence without inventing a final box")
+            expect(events.contains { $0["settingName"] as? String == "box_sampling" && $0["settingValue"] as? String == "consensus" },
+                   "box sampling mode changes are recorded")
             expect(events.contains { $0["requestID"] as? String == "invalid-numeric" }, "nonfinite metrics cannot break the recording stream")
+            let invalid = events.first { $0["requestID"] as? String == "invalid-numeric" }!
+            let invalidSamples = (invalid["ensemble"] as? [String: Any])?["samples"] as? [[String: Any]]
+            expect(invalidSamples?.first?["confidence"] as? String == "NaN", "malformed sample evidence stays inspectable without breaking recording")
             expect(!text.contains("synthetic-credential-must-not-appear") && !text.contains("api_key"), "operational recording API rejects credential setting fields")
             let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: run.appendingPathComponent("manifest.json"))) as! [String: Any]
             expect(manifest["rawAudio"] as? Bool == false, "recording explicitly excludes raw microphone audio")

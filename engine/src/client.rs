@@ -1,4 +1,7 @@
-use std::time::{Duration, SystemTime};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{
@@ -7,9 +10,11 @@ use reqwest::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::{
+    ensemble,
     goals::{self, Candidate},
     models::*,
 };
@@ -25,6 +30,7 @@ const TARGET_DEFINITION: &str = "The single currently visible interface control 
 pub struct Engine {
     client: Client,
     endpoint: String,
+    http_slots: Arc<Semaphore>,
 }
 
 impl Engine {
@@ -40,6 +46,7 @@ impl Engine {
         Ok(Self {
             client,
             endpoint: ENDPOINT.to_owned(),
+            http_slots: Arc::new(Semaphore::new(4)),
         })
     }
 
@@ -78,11 +85,10 @@ impl Engine {
             .header("Accept", "application/json")
     }
 
-    fn guidance_request(
-        &self,
+    fn prepare_guidance(
         request: &Request,
         input: &GuidanceInput,
-    ) -> Result<RequestBuilder, EngineError> {
+    ) -> Result<(Vec<u8>, Vec<u8>), EngineError> {
         let image = decode_jpeg(&input.image_jpeg_base64)?;
         let image_id = Uuid::new_v4().to_string();
         let payload = guidance_payload(&request.model, input, &image_id);
@@ -93,6 +99,15 @@ impl Engine {
                 "Guidance exceeds TypeSafe's request size limit.",
             ));
         }
+        Ok((json, image))
+    }
+
+    fn guidance_request(
+        &self,
+        request: &Request,
+        json: Vec<u8>,
+        image: Vec<u8>,
+    ) -> Result<RequestBuilder, EngineError> {
         let json_part = Part::bytes(json)
             .mime_str("application/json")
             .map_err(|_| EngineError::local("Could not prepare guidance JSON."))?;
@@ -115,8 +130,39 @@ impl Engine {
         request: &Request,
         input: &GuidanceInput,
     ) -> Result<GuidanceResult, EngineError> {
-        let body = self.send(self.guidance_request(request, input)?).await?;
-        parse_guidance(&body, request.minimum_presence, request.minimum_confidence)
+        if !matches!(input.sample_count, 1 | 3) {
+            return Err(EngineError::local(
+                "Guidance sample_count must be one or three.",
+            ));
+        }
+        let (json, image) = Self::prepare_guidance(request, input)?;
+        if input.sample_count == 1 {
+            let body = self
+                .send(self.guidance_request(request, json, image)?)
+                .await?;
+            return parse_guidance(&body, request.minimum_presence, request.minimum_confidence);
+        }
+        let one = self.guidance_request(request, json.clone(), image.clone())?;
+        let two = self.guidance_request(request, json.clone(), image.clone())?;
+        let three = self.guidance_request(request, json, image)?;
+        let (a, b, c) = tokio::join!(
+            self.guidance_sample(one),
+            self.guidance_sample(two),
+            self.guidance_sample(three)
+        );
+        ensemble::finish(
+            [a, b, c],
+            request.minimum_presence,
+            request.minimum_confidence,
+        )
+    }
+
+    async fn guidance_sample(
+        &self,
+        builder: RequestBuilder,
+    ) -> Result<GuidanceSample, EngineError> {
+        let body = self.send(builder).await?;
+        parse_guidance_sample(&body)
     }
 
     async fn goal(
@@ -134,6 +180,12 @@ impl Engine {
     }
 
     async fn send(&self, request: RequestBuilder) -> Result<Vec<u8>, EngineError> {
+        // Clones and separate guidance groups share this limit with goal calls.
+        let _slot = self
+            .http_slots
+            .acquire()
+            .await
+            .map_err(|_| EngineError::local("The Jev HTTP scheduler is unavailable."))?;
         let mut response = request.send().await.map_err(|error| {
             // reqwest errors can include URLs; emit a fixed safe message only.
             if error.is_timeout() {
@@ -261,6 +313,17 @@ fn parse_guidance(
     minimum_presence: f64,
     minimum_confidence: f64,
 ) -> Result<GuidanceResult, EngineError> {
+    let sample = parse_guidance_sample(data)?;
+    let supported = sample.presence >= minimum_presence && sample.confidence >= minimum_confidence;
+    Ok(GuidanceResult {
+        r#box: if supported { sample.r#box } else { None },
+        confidence: sample.confidence,
+        presence: sample.presence,
+        ensemble: None,
+    })
+}
+
+fn parse_guidance_sample(data: &[u8]) -> Result<GuidanceSample, EngineError> {
     #[derive(Deserialize)]
     struct Envelope {
         answers: Answers,
@@ -295,18 +358,10 @@ fn parse_guidance(
             "Jev returned probabilities outside the valid zero-to-one range.",
         ));
     }
-    let supported = presence.noul >= minimum_presence && target.confidence >= minimum_confidence;
-    // Box always supplies coordinates, even when no useful target exists. Gate
-    // first so an unused speculative answer cannot interrupt the help session.
-    // Experimental geometry can also be unusable despite high confidence; in
-    // that case abstain rather than invent a target by clamping or widening it.
-    let visible_box = if supported && target.r#box.is_valid() {
-        Some(target.r#box)
-    } else {
-        None
-    };
-    Ok(GuidanceResult {
-        r#box: visible_box,
+    // Preserve valid coordinates even below thresholds for experiment replay.
+    // Invalid experimental geometry never becomes a target or is repaired.
+    Ok(GuidanceSample {
+        r#box: target.r#box.is_valid().then_some(target.r#box),
         confidence: target.confidence,
         presence: presence.noul,
     })

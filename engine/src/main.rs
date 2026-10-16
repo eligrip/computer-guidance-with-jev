@@ -1,4 +1,5 @@
 mod client;
+mod ensemble;
 mod goals;
 mod models;
 mod protocol;

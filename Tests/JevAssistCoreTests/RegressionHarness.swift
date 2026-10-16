@@ -100,6 +100,24 @@ enum CoreRegressionHarness {
         try expect(decoded.box == a, "Rust adapter lost documented box")
         let missing = try await client.guidance(EngineFixture.input("absent"))
         try expect(missing.box == nil && missing.presence == 0.1, "Engine gating result was lost")
+        let ensemble = try await client.guidance(EngineFixture.input("ensemble", sampling: .consensus))
+        try expect(ensemble.box == a && ensemble.ensemble?.selectedIndices == [0, 1, 2], "Three-call evidence crosses the pipe intact")
+        try expect(ensemble.ensemble?.samples.count == 3, "All comparison samples are retained")
+        let disagreement = try await client.guidance(EngineFixture.input("ensemble-none", sampling: .consensus))
+        try expect(disagreement.box == nil && disagreement.ensemble?.method == "no_agreement", "Disagreement abstains without losing evidence")
+        for invalidEvidence in ["ensemble-bad", "ensemble-missing"] {
+            do {
+                _ = try await client.guidance(EngineFixture.input(invalidEvidence, sampling: .consensus))
+                throw Failure(message: "Invalid ensemble evidence passed process boundary")
+            } catch is JevError { checks += 1 }
+        }
+        do {
+            _ = try await client.guidance(EngineFixture.input("ensemble-rate-limit", sampling: .consensus))
+            throw Failure(message: "Partial batch failure was hidden")
+        } catch let error as JevError {
+            try expect(error.completedCalls == 2, "Successful samples are counted even when the batch fails")
+            try expect(error.isRetryable && error.retryAfter == 2.5, "Partial batch preserves rate-limit backoff")
+        }
         let pid1 = try await client.inferGoal(transcript: "pid", previousGoal: nil)
         let pid2 = try await client.inferGoal(transcript: "pid", previousGoal: nil)
         try expect(pid1 == pid2, "Adapter did not reuse the same Rust subprocess")

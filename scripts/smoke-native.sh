@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ "${1:-}" != "--live" ]]; then
   echo "Opt-in required: bash scripts/smoke-native.sh --live"
-  echo "Makes two Jev calls using only a generated image and synthetic speech."
+  echo "Uses a generated image and synthetic speech. Add --consensus for a three-call Box comparison."
   exit 2
 fi
 
@@ -15,4 +15,4 @@ swiftc -parse-as-library \
   "$project_root/scripts/smoke-native.swift" \
   -o "$project_root/.build/smoke/jev-native-smoke"
 cd "$project_root"
-exec "$project_root/.build/smoke/jev-native-smoke" --live
+exec "$project_root/.build/smoke/jev-native-smoke" "$@"

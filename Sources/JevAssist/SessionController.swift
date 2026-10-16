@@ -15,6 +15,7 @@ final class SessionController: ObservableObject {
     @Published private(set) var speechMode: SpeechRecognitionMode
     @Published private(set) var highlightStyle = HighlightStyle.restored(UserDefaults.standard.string(forKey: "highlightStyle"))
     @Published private(set) var guidancePace = GuidancePace.restored(UserDefaults.standard.string(forKey: "guidancePace"))
+    @Published private(set) var boxSampling = BoxSampling.restored(UserDefaults.standard.string(forKey: "boxSampling"))
     @Published private(set) var recordingEnabled = UserDefaults.standard.object(forKey: "recordSessions") as? Bool ?? SessionRecorder.defaultEnabled
     @Published private(set) var isRecording = false
     @Published private(set) var recordingStatus = ""
@@ -53,6 +54,7 @@ final class SessionController: ObservableObject {
     private var observedNoSurfaces = false
     private var completions: [Date] = []
     private var dispatchCount = 0
+    private var lastDispatchedSampling: BoxSampling = .single
 
     init() {
         speechLanguages = SpeechLanguage.available
@@ -218,8 +220,9 @@ final class SessionController: ObservableObject {
             if transcript.isEmpty { status = "Listening · talk through what you want" }
             return
         }
+        guard guidanceTasks.isEmpty || lastDispatchedSampling == boxSampling else { return }
         guard guidancePace.canDispatch(inFlight: guidanceTasks.count, lastDispatch: lastDispatch,
-                                       retryAfter: nextAllowedDispatch, now: Date()),
+                                       retryAfter: nextAllowedDispatch, now: Date(), sampling: boxSampling),
               let client else { return }
         // Give small Dock icons a dedicated image on alternating requests.
         // Freshness still belongs to the full original scene; coordinates belong
@@ -231,14 +234,17 @@ final class SessionController: ObservableObject {
         let scope = dockOnly
             ? "Image scope: visible Dock only. The active app is \(frame.appName), window \(frame.windowTitle). An app icon is useful only if opening or switching apps advances the latest request. If the active app already contains the next useful control, no Dock target is needed. "
             : "Image scope: active app and visible Dock. "
+        let requestSampling = boxSampling
         let input = GuidanceInput(transcript: transcript, goal: goal, notes: LocalStorage.readNotes(),
                                   browserContext: LocalStorage.browserContext(for: frame.bundleID),
-                                  accessibilityContext: scope + (screens.accessibilityContext(for: requestFrame) ?? ""), imageJPEG: requestFrame.jpeg)
+                                  accessibilityContext: scope + (screens.accessibilityContext(for: requestFrame) ?? ""),
+                                  imageJPEG: requestFrame.jpeg, sampling: requestSampling)
         let requestSession = sessionID
         let requestID = UUID()
         let frameID = recorder.recordFrame(requestFrame, generation: ticket.screenGeneration)
         recorder.recordContext(transcript: transcript, goal: goal)
         lastDispatch = Date()
+        lastDispatchedSampling = requestSampling
         let started = Date()
         guidanceTasks[requestID] = Task { [weak self] in
             do {
@@ -247,10 +253,15 @@ final class SessionController: ObservableObject {
                 self.guidanceTasks.removeValue(forKey: requestID)
                 defer { self.scheduleGuidancePump() }
                 self.failures = 0
-                self.requestCount += 1
+                self.requestCount += requestSampling.sampleCount
                 let now = Date()
                 let latency = now.timeIntervalSince(started) * 1000
-                self.updateMetrics(latencyMS: latency)
+                self.updateMetrics(latencyMS: latency, completedCalls: requestSampling.sampleCount)
+                guard self.boxSampling == requestSampling else {
+                    self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
+                        latencyMS: latency, disposition: "suppressed", reason: "box_check_mode_changed")
+                    return
+                }
                 // A new partial transcript does not invalidate a current-screen
                 // answer: otherwise continuous speech could starve all guidance.
                 // Re-capture before displaying to close the gap between ticks.
@@ -281,7 +292,7 @@ final class SessionController: ObservableObject {
                     self.recorder.recordHighlight(reason: "accepted", frameID: frameID, box: box, targetRect: rect)
                 } else {
                     let reason = self.latch.box != nil ? "existing_highlight_held" :
-                        (result.box == nil ? "presence_or_confidence_gate" : "stale_ticket_or_outside_image")
+                        (result.box == nil ? (result.ensemble?.method ?? "presence_or_confidence_gate") : "stale_ticket_or_outside_image")
                     self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
                         latencyMS: latency, disposition: "suppressed", reason: reason)
                 }
@@ -291,6 +302,10 @@ final class SessionController: ObservableObject {
                 self.guidanceTasks.removeValue(forKey: requestID)
                 self.failures += 1
                 let serviceError = error as? JevError
+                if let completed = serviceError?.completedCalls, completed > 0 {
+                    self.requestCount += completed
+                    self.updateMetrics(latencyMS: Date().timeIntervalSince(started) * 1000, completedCalls: completed)
+                }
                 let delay = serviceError?.retryAfter ?? min(15, pow(2, Double(min(self.failures, 4))) * 0.5)
                 self.nextAllowedDispatch = max(self.nextAllowedDispatch, Date().addingTimeInterval(delay))
                 self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: nil,
@@ -353,9 +368,9 @@ final class SessionController: ObservableObject {
         }
     }
 
-    private func updateMetrics(latencyMS: Double) {
+    private func updateMetrics(latencyMS: Double, completedCalls: Int = 1) {
         let now = Date()
-        completions.append(now)
+        completions.append(contentsOf: repeatElement(now, count: completedCalls))
         completions.removeAll { now.timeIntervalSince($0) > 5 }
         metrics = "\(requestCount) target · \(goalRequestCount) goal · \(String(format: "%.1f", Double(completions.count) / 5))/s · \(Int(latencyMS))ms"
     }
@@ -377,6 +392,15 @@ final class SessionController: ObservableObject {
         scheduleGuidancePump()
     }
 
+    func setBoxSampling(_ sampling: BoxSampling) {
+        boxSampling = sampling
+        UserDefaults.standard.set(sampling.rawValue, forKey: "boxSampling")
+        recorder.recordSetting(name: "box_sampling", value: sampling.rawValue)
+        // Finish existing work before switching batch sizes. A setting change
+        // cannot release or move a highlight on the current screen.
+        scheduleGuidancePump()
+    }
+
     func setRecordingEnabled(_ enabled: Bool) {
         recordingEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "recordSessions")
@@ -391,6 +415,7 @@ final class SessionController: ObservableObject {
     private func startRecording() {
         recorder.start(sessionID: sessionID)
         recorder.recordSetting(name: "guidance_pace", value: guidancePace.rawValue)
+        recorder.recordSetting(name: "box_sampling", value: boxSampling.rawValue)
         recorder.recordSetting(name: "highlight_style", value: highlightStyle.rawValue)
         recorder.recordSetting(name: "speech_mode", value: speechMode.rawValue)
         recorder.recordSetting(name: "speech_language", value: speechLanguageID)

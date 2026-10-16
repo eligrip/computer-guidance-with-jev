@@ -7,10 +7,17 @@ public enum JevError: Error, LocalizedError, Sendable {
     case invalidResponse(String)
     case http(statusCode: Int, retryAfter: TimeInterval?)
     case engine(message: String, retryAfter: TimeInterval?)
+    indirect case partial(underlying: JevError, completedCalls: Int)
+
+    public var completedCalls: Int {
+        if case .partial(_, let count) = self { return count }
+        return 0
+    }
 
     public var retryAfter: TimeInterval? {
         switch self {
         case .http(_, let delay), .engine(_, let delay): return delay
+        case .partial(let error, _): return error.retryAfter
         default: return nil
         }
     }
@@ -19,6 +26,7 @@ public enum JevError: Error, LocalizedError, Sendable {
         switch self {
         case .http(let status, _): return status == 429 || (500...599).contains(status)
         case .engine(_, let delay): return delay != nil
+        case .partial(let error, _): return error.isRetryable
         default: return false
         }
     }
@@ -30,6 +38,7 @@ public enum JevError: Error, LocalizedError, Sendable {
         case .invalidImage(let reason): return "Screen image could not be sent: \(reason)"
         case .invalidResponse(let reason): return "Jev returned an invalid answer: \(reason)"
         case .engine(let message, _): return message
+        case .partial(let error, _): return error.errorDescription
         case .http(let status, _):
             switch status {
             case 401, 403: return "TypeSafe rejected the API key or its access (HTTP \(status))."
@@ -70,15 +79,21 @@ public struct JevClient: Sendable {
             "transcript": input.transcript, "goal": input.goal as Any? ?? NSNull(), "notes": input.notes,
             "browser_context": input.browserContext as Any? ?? NSNull(),
             "accessibility_context": input.accessibilityContext as Any? ?? NSNull(),
-            "image_jpeg_base64": input.imageJPEG.base64EncodedString()
+            "image_jpeg_base64": input.imageJPEG.base64EncodedString(), "sample_count": input.sampling.sampleCount
         ])
-        struct Result: Decodable { let box: NormalizedBox?; let confidence: Double; let presence: Double }
+        struct Result: Decodable {
+            let box: NormalizedBox?; let confidence: Double; let presence: Double; let ensemble: BoxEnsemble?
+        }
         let result: Result = try decodeResult(response)
         guard result.box?.isValid != false, result.confidence.isFinite, (0...1).contains(result.confidence),
               result.presence.isFinite, (0...1).contains(result.presence) else {
             throw JevError.invalidResponse("Engine returned invalid box coordinates or probabilities.")
         }
-        return GuidanceResult(box: result.box, confidence: result.confidence, presence: result.presence)
+        guard (input.sampling == .single && result.ensemble == nil)
+                || (input.sampling == .consensus && result.ensemble?.isValid(for: result.box) == true) else {
+            throw JevError.invalidResponse("Engine returned inconsistent box comparison evidence.")
+        }
+        return GuidanceResult(box: result.box, confidence: result.confidence, presence: result.presence, ensemble: result.ensemble)
     }
 
     public func inferGoal(transcript: String, previousGoal: String?) async throws -> String? {
@@ -110,8 +125,12 @@ public struct JevClient: Sendable {
         if !reply.ok {
             guard let error = reply.error else { throw JevError.invalidResponse("The engine error had no details.") }
             let retry = error.retry_after.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
-            if let status = error.status { throw JevError.http(statusCode: status, retryAfter: retry) }
-            throw JevError.engine(message: String(error.message.prefix(300)), retryAfter: retry)
+            let failure: JevError = error.status.map { .http(statusCode: $0, retryAfter: retry) }
+                ?? .engine(message: String(error.message.prefix(300)), retryAfter: retry)
+            if let completed = error.completed_calls {
+                throw JevError.partial(underlying: failure, completedCalls: min(2, max(0, completed)))
+            }
+            throw failure
         }
         guard let result = reply.result else { throw JevError.invalidResponse("The engine result was missing.") }
         return result
@@ -128,4 +147,5 @@ private struct EngineFailure: Decodable {
     let message: String
     let retry_after: Double?
     let status: Int?
+    let completed_calls: Int?
 }

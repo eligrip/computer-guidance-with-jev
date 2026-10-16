@@ -25,8 +25,15 @@ enum RecordingReviewPage {
     #stage { position:relative; line-height:0; min-height:100px; }
     #screen { width:100%; height:auto; display:block; border-radius:8px; }
     .box { position:absolute; pointer-events:none; border-radius:5px; }
-    #held { border:3px solid #54e2bc; background:#54e2bc12; box-shadow:0 0 0 1px #0b1411; }
-    #candidate { border:2px dashed #ffbd69; }
+    #held { border:3px solid #54e2bc; background:#54e2bc12; box-shadow:0 0 0 1px #0b1411; z-index:3; }
+    #candidate { border:3px dashed #ffbd69; z-index:2; }
+    .sample { border:1.5px solid; z-index:1; }
+    .sample span { position:absolute; top:1px; left:2px; padding:3px; border-radius:3px; background:#101719e8; font-size:11px; line-height:1; }
+    #sample0 { border-color:#8ba6c7; color:#8ba6c7; } #sample1 { border-color:#b19ac8; color:#b19ac8; } #sample2 { border-color:#c69caa; color:#c69caa; }
+    #sample1 span { left:auto; right:2px; } #sample2 span { top:auto; bottom:2px; }
+    .sample-row { margin:12px 0 0; padding-left:10px; border-left:3px solid; white-space:pre-wrap; font-size:13px; line-height:1.5; }
+    #sampleRow0 { border-color:#8ba6c7; } #sampleRow1 { border-color:#b19ac8; } #sampleRow2 { border-color:#c69caa; }
+    #ensembleSummary { white-space:pre-wrap; font-size:13px; line-height:1.5; }
     .legend { font-size:13px; margin:12px 0 0; }
     .legend span { display:inline-block; margin-right:18px; } .teal { color:#54e2bc; } .amber { color:#ffbd69; }
     #transcript { white-space:pre-wrap; max-height:390px; overflow:auto; line-height:1.5; }
@@ -50,13 +57,14 @@ enum RecordingReviewPage {
       <p id="stats"></p>
       <div class="columns">
         <section class="card">
-          <div id="stage"><img id="screen" alt="Recorded request screenshot" hidden><div id="held" class="box" hidden></div><div id="candidate" class="box" hidden></div></div>
+          <div id="stage"><img id="screen" alt="Recorded request screenshot" hidden><div id="held" class="box" hidden></div><div id="candidate" class="box" hidden></div><div id="sample0" class="box sample" hidden><span>1</span></div><div id="sample1" class="box sample" hidden><span>2</span></div><div id="sample2" class="box sample" hidden><span>3</span></div></div>
           <p id="empty">Screenshots appear here when you load the event log.</p>
-          <p class="legend"><span class="teal">Solid: held highlight</span><span class="amber">Dashed: Jev suggestion</span></p>
+          <p class="legend"><span class="teal">Green: held highlight</span><span class="amber">Amber: final Jev suggestion</span><span>Numbered: original samples; dotted samples excluded</span></p>
           <p id="detail"></p>
         </section>
         <aside>
           <section class="card"><h2>What happened</h2><div id="reason">—</div></section><br>
+          <section class="card" id="ensembleCard" hidden><h2>Three-call consensus</h2><div id="ensembleSummary"></div><div id="sampleRow0" class="sample-row" hidden></div><div id="sampleRow1" class="sample-row" hidden></div><div id="sampleRow2" class="sample-row" hidden></div></section><br>
           <section class="card"><h2>Keeping in mind</h2><div id="goal">—</div></section><br>
           <section class="card"><h2>Hearing you at this frame</h2><div id="transcript">—</div></section>
         </aside>
@@ -75,11 +83,34 @@ enum RecordingReviewPage {
       return {left:c.x+(rect.x-s.x)/s.width*c.width,top:c.y+(rect.y-s.y)/s.height*c.height,
               right:c.x+(rect.x+rect.width-s.x)/s.width*c.width,bottom:c.y+(rect.y+rect.height-s.y)/s.height*c.height};
     }
+    function validBox(box) {
+      return box && [box.left,box.right,box.top,box.bottom].every(finite) && box.left>=0 && box.top>=0 && box.right<=1.00001 && box.bottom<=1.00001 && box.right>box.left && box.bottom>box.top;
+    }
     function draw(id, box) {
       const el = $(id);
-      if (!box || ![box.left,box.right,box.top,box.bottom].every(finite) || box.left<0 || box.top<0 || box.right>1.00001 || box.bottom>1.00001 || box.right<=box.left || box.bottom<=box.top) { el.hidden=true; return; }
+      if (!validBox(box)) { el.hidden=true; return; }
       el.style.left=(box.left*100)+'%'; el.style.top=(box.top*100)+'%';
       el.style.width=((box.right-box.left)*100)+'%'; el.style.height=((box.bottom-box.top)*100)+'%'; el.hidden=false;
+    }
+    function renderEnsemble(event, hasImage) {
+      const ensemble=event.kind==='decision'?event.ensemble:null;
+      const samples=Array.isArray(ensemble?.samples)?ensemble.samples:[];
+      const selected=new Set((Array.isArray(ensemble?.selected_indices)?ensemble.selected_indices:[]).filter(i=>Number.isInteger(i)&&i>=0&&i<samples.length));
+      $('ensembleCard').hidden=!samples.length;
+      $('ensembleSummary').textContent=samples.length
+        ? 'Method: '+(words(ensemble.method)||'not recorded')+'\nSelected: '+([...selected].map(i=>i+1).join(', ')||'none')+(finite(ensemble.iou_threshold)?' · IoU threshold '+ensemble.iou_threshold.toFixed(2):'')+(!hasImage?'\nRequest screenshot unavailable; sample outlines hidden.':'')
+        : '';
+      for(let i=0;i<3;i++) {
+        const sample=samples[i], outline=$('sample'+i), row=$('sampleRow'+i);
+        draw('sample'+i,hasImage?sample?.box:null);
+        outline.style.borderStyle=selected.has(i)?'solid':'dotted'; outline.style.opacity=selected.has(i)?'0.9':'0.55';
+        row.hidden=!sample;
+        if(sample) {
+          const probability=value=>finite(value)?(value*100).toFixed(1)+'%':'unavailable';
+          const bounds=validBox(sample.box)?'L '+sample.box.left.toFixed(3)+' · T '+sample.box.top.toFixed(3)+' · R '+sample.box.right.toFixed(3)+' · B '+sample.box.bottom.toFixed(3):(sample.box?'Invalid box':'No box');
+          row.textContent='Sample '+(i+1)+' · '+(selected.has(i)?'selected':'excluded')+'\nConfidence '+probability(sample.confidence)+' · presence '+probability(sample.presence)+'\n'+bounds;
+        } else { row.textContent=''; }
+      }
     }
     function render() {
       const step = timeline[index]; if (!step) return;
@@ -90,6 +121,7 @@ enum RecordingReviewPage {
       if (validPath) $('screen').src=path;
       draw('held', validPath ? (step.held?.targetRect ? rectInImage(step.held.targetRect,f) : (step.held?.frameID===f?.frameID ? step.held?.box : null)) : null);
       draw('candidate', validPath && e.kind==='decision' ? e.box : null);
+      renderEnsemble(e,validPath);
       $('position').textContent=(index+1)+' / '+timeline.length;
       $('scrub').value=index;
       const ms=finite(e.elapsedMS)?e.elapsedMS:0;
@@ -145,7 +177,11 @@ enum RecordingReviewPage {
     $('previous').addEventListener('click',()=>{stop();index=Math.max(0,index-1);render();});
     $('next').addEventListener('click',()=>{stop();index=Math.min(timeline.length-1,index+1);render();});
     $('play').addEventListener('click',()=>{if(timer){stop();return;} if(index>=timeline.length-1)index=0; $('play').textContent='Pause';advance();});
-    $('screen').addEventListener('error',()=>{$('empty').hidden=false;$('empty').textContent='The matching screenshot is missing. Keep this page, events.ndjson, and the frames folder together.';});
+    $('screen').addEventListener('error',()=>{
+      $('screen').hidden=true;
+      for(const id of ['held','candidate','sample0','sample1','sample2']) $(id).hidden=true;
+      $('empty').hidden=false;$('empty').textContent='The matching screenshot is missing. Keep this page, events.ndjson, and the frames folder together.';
+    });
     </script>
     </html>
     """#

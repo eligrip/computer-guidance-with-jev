@@ -221,6 +221,12 @@ private struct SessionView: View {
                         ForEach(GuidancePace.allCases) { pace in Text(pace.title).tag(pace) }
                     }
                     .pickerStyle(.segmented)
+                    Picker("Box checks", selection: Binding(get: { session.boxSampling }, set: session.setBoxSampling)) {
+                        ForEach(BoxSampling.allCases) { sampling in Text(sampling.title).tag(sampling) }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Three checks compares three answers before showing a new highlight. Your current highlight stays until the screen changes.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Toggle("Save session recordings on this Mac", isOn: Binding(get: { session.recordingEnabled }, set: session.setRecordingEnabled))
                         .toggleStyle(.switch).font(.system(size: 13))
                     Text("Saves screen images, your words, and guidance decisions locally. No microphone audio. Old recordings are removed when storage fills.")

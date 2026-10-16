@@ -103,6 +103,7 @@ final class SessionRecorder {
         entry.confidence = result?.confidence.finiteValue
         entry.presence = result?.presence.finiteValue
         entry.box = result?.box.flatMap { $0.isValid ? $0 : nil }
+        entry.ensemble = result?.ensemble
         entry.latencyMS = latencyMS.finiteValue
         entry.disposition = String(disposition.prefix(128))
         entry.targetRect = targetRect.flatMap(RecordingRect.init)
@@ -119,7 +120,7 @@ final class SessionRecorder {
 
     func recordSetting(name: String, value: String) {
         // Only operational tuning fields can enter this stream; no key/config dump.
-        guard ["guidance_pace", "highlight_style", "speech_mode", "speech_language", "recording"].contains(name) else { return }
+        guard ["guidance_pace", "box_sampling", "highlight_style", "speech_mode", "speech_language", "recording"].contains(name) else { return }
         var entry = event("setting")
         entry.settingName = name
         entry.settingValue = String(value.prefix(128))
@@ -224,6 +225,7 @@ struct RecordingEvent: Codable {
     var confidence: Double?
     var presence: Double?
     var box: NormalizedBox?
+    var ensemble: BoxEnsemble?
     var targetRect: RecordingRect?
     var latencyMS: Double?
     var disposition: String?
@@ -249,7 +251,13 @@ final class SessionRecordingWriter {
     private var older: [(url: URL, bytes: Int)] = []
     private var imageHashes = Set<String>()
 
-    init(root: URL, limits: RecordingLimits) { self.root = root; self.limits = limits; encoder.outputFormatting = [.sortedKeys] }
+    init(root: URL, limits: RecordingLimits) {
+        self.root = root; self.limits = limits
+        encoder.outputFormatting = [.sortedKeys]
+        // Keep even malformed sample evidence inspectable without stopping the
+        // recording. Valid probabilities/coordinates retain their exact values.
+        encoder.nonConformingFloatEncodingStrategy = .convertToString(positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+    }
     deinit { close() }
 
     func start(token: UUID, sessionID: UUID) throws {

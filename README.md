@@ -33,6 +33,10 @@ You can also type a thought into the panel. The menu-bar icon opens session cont
 
 **Settings → Guidance pace** defaults to **Fast**: two target requests can run concurrently, with new dispatches at least 100 ms apart. **Balanced** uses one target request and a 250 ms minimum interval. Both keep checking after a highlight appears; those checks cannot replace a box on an unchanged screen. The panel reports completed target/goal calls, recent calls per second, and latency.
 
+**Settings → Box checks → Three checks** enables an experiment alongside the default **Single check**. Each batch sends the same screenshot, context, and question in three simultaneous Jev calls. After presence/confidence gating, Rust averages the edges of agreeing boxes using their confidence as weights. All selected boxes must overlap each other with intersection-over-union of at least 0.5; if all three do not agree, it chooses the strongest agreeing pair. With no pair, it keeps checking instead of averaging different targets. One three-call batch runs at a time, alongside goal detection, with a global limit of four HTTP calls. Changing this setting never releases an existing highlight.
+
+Recordings retain all three answers and the selected indices for comparison with the final box. Repeated calls can produce identical or correlated answers; this experiment measures whether combining them helps, without treating agreement as increased certainty. The existing thresholds and overlap cutoff are prototype tuning values.
+
 ### Speech setup and recovery
 
 Normal setup uses the **Voice** step, with no provider or language choices to navigate. **Settings → Permissions** reopens the three-step guide. **Settings → Advanced speech** lets you change the spoken language or recognition mode when needed. **On-device only** is the default. Apple can report its recognition service as available even when its on-device model is unavailable to this app. That is a language/model availability check, not a claim that your Mac cannot transcribe speech.
@@ -72,7 +76,7 @@ A Rust engine handles Jev requests, verbatim goal selection, and answer validati
 - **Guidance:** `jev-1.14.0` receives recent speech, the goal anchor, notes, current screenshot, and available browser/accessibility context. A Box question locates the next useful target; a Noul question checks whether a useful target is visible.
 - **Goal anchor:** a separate request combines a Noul judgment about a new/completed task with a Choice over recent exact source clauses. A newer task replaces an older broader goal; ordinary substeps retain it. Fast mode checks changed speech at least 400 ms apart and reconsiders unchanged speech every two seconds. This continues while the app panel is open or capture is unavailable. The app never asks Jev to generate goal text.
 - **Presentation:** a deterministic latch accepts a box for the current screen generation. Responses from old screens and stopped sessions are discarded. Further responses cannot move the box on the unchanged screen.
-- **Scheduling:** partial speech schedules fresh evaluation immediately. The newest context is evaluated again as soon as a request slot opens. Fast mode uses an 80 ms observation loop, two concurrent guidance requests, and one independent goal request. Balanced uses a 160 ms loop and one guidance request. Rate limits and temporary service failures trigger backoff; a concurrent successful response cannot shorten a retry deadline.
+- **Scheduling:** partial speech schedules fresh evaluation immediately. The newest context is evaluated again as soon as a request slot opens. Fast mode uses an 80 ms observation loop, two concurrent single-check guidance requests, and one independent goal request. Balanced uses a 160 ms loop and one guidance request. Three checks uses one batch of three concurrent calls in either pace. Rate limits and temporary service failures trigger backoff; a concurrent successful response cannot shorten a retry deadline, and a failed member fails its batch while preserving the longest retry delay.
 
 Images and Box are experimental TypeSafe features. Confidence thresholds and screen-change sensitivity are prototype defaults; they need evaluation on actual desktop tasks. A presence judgment does not prove the returned box is the correct action.
 
@@ -92,7 +96,7 @@ While iterating from a developer checkout, session recording defaults on. Other 
 
 Recordings use owner-only folders/files and never enter Git. Repeated identical images are deduplicated; asynchronous writing cannot block guidance. Limits are 256 MiB per session, 1 GiB overall, and 20 sessions. Old recordings are removed to stay within those limits, and a full/failing disk stops recording without stopping assistance. Recording starts only with an active help session and ends when it stops or recording is disabled.
 
-Open a run’s `review.html`, choose `events.ndjson` from the same folder, then scrub or play the timeline. Solid teal marks the held highlight; dashed amber marks Jev’s candidate. The viewer shows the request’s conversation, goal, probabilities, latency, and display/suppression reasons without a server or network access. Keep `review.html`, `events.ndjson`, and `frames/` together.
+Open a run’s `review.html`, choose `events.ndjson` from the same folder, then scrub or play the timeline. Solid teal marks the held highlight; dashed amber marks the final Jev suggestion. Three-check decisions also show the three original boxes in muted colors, with numbered labels, each sample’s confidence/presence, selected versus excluded samples, the consensus method, and its IoU threshold. Excluded samples have dotted outlines. The recorded final box is displayed unchanged. The viewer shows the request’s conversation, goal, latency, and display/suppression reasons without a server or network access; missing request screenshots are never replaced with an earlier frame. Keep `review.html`, `events.ndjson`, and `frames/` together.
 
 The app never clicks, types, scrolls, or runs commands on your behalf. Page content is treated as evidence, not executable instructions. A browser page may contain sensitive text, so only start sharing a page you intend to use with the assistant.
 
@@ -122,7 +126,9 @@ python3 scripts/smoke-jev.py --live
 
 It verifies a visible Box, an absent-target presence judgment, and verbatim goal selection. It uses your key and incurs API usage. Passing this check verifies connectivity and a small fixture; it is not a desktop accuracy benchmark.
 
-After building the engine, run `bash scripts/smoke-native.sh --live` to exercise the full Swift → Rust → Jev path against a generated photo-saving interface. This makes two synthetic requests and checks that the box points to the expected button.
+After building the engine, run `bash scripts/smoke-native.sh --live` to exercise the full Swift → Rust → Jev path against a generated photo-saving interface. This makes two synthetic requests and checks that the box points to the expected button. Add `--consensus` to make four requests (one goal and three Box/presence calls), validate the comparison metadata, and report the individual answers and combined box.
+
+For a repeatable comparison, run `python3 engine/evals/box_consensus.py --live` after a Rust debug build (requires Pillow). It generates a wide button, a small toolbar control, and a Dock-like icon, and reports per-sample/fused overlap with known bounds, coordinate spread, and standalone/batch latency. The default three rounds make 37 provider calls including warmup; `--rounds 1` makes 13. No real screens, notes, or speech are used.
 
 ## Source layout
 

@@ -31,6 +31,12 @@ pub struct GuidanceInput {
     pub browser_context: Option<String>,
     pub accessibility_context: Option<String>,
     pub image_jpeg_base64: String,
+    #[serde(default = "default_sample_count")]
+    pub sample_count: u8,
+}
+
+fn default_sample_count() -> u8 {
+    1
 }
 
 #[derive(Deserialize)]
@@ -66,6 +72,31 @@ pub struct GuidanceResult {
     pub r#box: Option<NormalizedBox>,
     pub confidence: f64,
     pub presence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ensemble: Option<EnsembleDiagnostics>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+pub struct GuidanceSample {
+    pub r#box: Option<NormalizedBox>,
+    pub confidence: f64,
+    pub presence: f64,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct EnsembleDiagnostics {
+    pub samples: Vec<GuidanceSample>,
+    pub selected_indices: Vec<usize>,
+    pub method: EnsembleMethod,
+    pub iou_threshold: f64,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum EnsembleMethod {
+    WeightedAgreement,
+    NoAgreement,
+    InsufficientValidSamples,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -80,6 +111,8 @@ pub struct EngineError {
     pub message: String,
     pub retry_after: Option<f64>,
     pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_calls: Option<usize>,
 }
 
 impl EngineError {
@@ -88,6 +121,7 @@ impl EngineError {
             message: message.to_owned(),
             retry_after: None,
             status: None,
+            completed_calls: None,
         }
     }
 
@@ -102,6 +136,7 @@ impl EngineError {
             message: message.to_owned(),
             retry_after,
             status: Some(status),
+            completed_calls: None,
         }
     }
 }
