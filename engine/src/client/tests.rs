@@ -7,6 +7,9 @@ use tokio::{
 
 #[path = "../../evals/command_focus.rs"]
 mod command_focus;
+mod cooldown;
+#[path = "../../evals/transport_compare.rs"]
+mod transport_compare;
 
 fn fixture_request(op: &str) -> Request {
     let input = if op == "guidance" {
@@ -389,7 +392,11 @@ async fn failed_group_waits_for_every_sample_and_preserves_the_longest_backoff()
         let error = engine.execute(&three_sample_request()).await.unwrap_err();
         assert!(started.elapsed() >= Duration::from_millis(120));
         assert_eq!(error.status, Some(429));
-        assert_eq!(error.retry_after, Some(7.0));
+        assert!(
+            error
+                .retry_after
+                .is_some_and(|delay| delay > 6.5 && delay <= 7.0)
+        );
         assert_eq!(error.completed_calls, Some(1));
         assert!(!error.message.contains("must not echo"));
         assert_eq!(server.await.unwrap().len(), 3);
@@ -701,7 +708,11 @@ async fn http_rate_limit_reaches_caller_without_echoed_error_body() {
         .err()
         .unwrap();
     assert_eq!(error.status, Some(429));
-    assert_eq!(error.retry_after, Some(2.0));
+    assert!(
+        error
+            .retry_after
+            .is_some_and(|delay| delay > 1.5 && delay <= 2.0)
+    );
     assert!(!error.message.contains("private speech"));
     assert!(!error.message.contains("secret-key"));
     server.await.unwrap();
@@ -814,7 +825,11 @@ async fn rate_limit_after_two_successes_reports_completed_calls() {
         let (engine, server, _) = concurrent_fixture_server(replies).await;
         let error = engine.execute(&three_sample_request()).await.unwrap_err();
         assert_eq!(error.status, Some(429));
-        assert_eq!(error.retry_after, Some(3.0));
+        assert!(
+            error
+                .retry_after
+                .is_some_and(|delay| delay > 2.5 && delay <= 3.0)
+        );
         assert_eq!(error.completed_calls, Some(2));
         assert_eq!(serde_json::to_value(error).unwrap()["completed_calls"], 2);
         server.await.unwrap();

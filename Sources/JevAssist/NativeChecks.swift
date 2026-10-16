@@ -135,6 +135,44 @@ enum NativeChecks {
         cacheObserver.reset()
         _ = cacheObserver.prepareForGuidance(moved, at: 101)
         expect(cacheObserver.imageEncodingCount == firstEncodes + 10, "reset clears prepared image cache")
+        var appView = ScreenSnapshot(windowID: 1, processID: 100, bundleID: "fixture", appName: "Fixture", windowTitle: "App window",
+            screenBounds: CGRect(x: 0, y: 0, width: 1000, height: 1000), jpeg: Data(), fingerprint: blank,
+            imageContentRect: CGRect(x: 0.1, y: 0.2, width: 0.8, height: 0.6), surfaceIDs: [1, 99])
+        appView.dockBounds = [CGRect(x: 0, y: 900, width: 1000, height: 100)]
+        appView.dockProcessID = 200
+        var dockView = ScreenSnapshot(windowID: 99, processID: 100, bundleID: "fixture", appName: "Fixture", windowTitle: "Dock",
+            screenBounds: CGRect(x: 0, y: 900, width: 1000, height: 100), jpeg: Data(), fingerprint: blank,
+            imageContentRect: CGRect(x: 0, y: 0.25, width: 1, height: 0.5), surfaceIDs: [99])
+        dockView.dockBounds = appView.dockBounds
+        dockView.dockProcessID = 200
+        let accessibility = AccessibilityObservation(appLabels: ["Search", "Save"], dockItems: [
+            .init(title: "Mail", screenBounds: CGRect(x: 100, y: 920, width: 100, height: 40)),
+            .init(title: "Other display", screenBounds: CGRect(x: 1200, y: 920, width: 100, height: 40)),
+            .init(title: "Hidden item", screenBounds: CGRect(x: 100, y: 400, width: 100, height: 40))
+        ])
+        let fullContext = accessibility.context(for: appView)
+        let dockContext = accessibility.context(for: dockView)
+        expect(fullContext.contains("Mail [left 0.180, top 0.752, right 0.260, bottom 0.776]"), "shared AX observation maps full-image padding")
+        expect(dockContext.contains("Mail [left 0.100, top 0.350, right 0.200, bottom 0.550]"), "shared AX observation remaps the Dock crop independently")
+        expect(fullContext.contains("Search | Save") && dockContext.contains("Search | Save"), "app labels are shared across scene and Dock views")
+        expect(!dockContext.contains("Other display") && !fullContext.contains("Hidden item"), "raw AX items outside visible capture remain excluded")
+        expect(fullContext.contains("Window: App window") && dockContext.contains("Window: Dock"), "view metadata is rendered from the current frame")
+        var accessibilityCache = AccessibilityObservationCache()
+        accessibilityCache.store(accessibility, processID: 100, dockProcessID: 200, at: 10)
+        expect(accessibilityCache.value(processID: 100, dockProcessID: 200, at: 10.1)?.context(for: dockView) == dockContext,
+               "one raw AX read serves another image view")
+        expect(accessibilityCache.value(processID: 101, dockProcessID: 200, at: 10.1) == nil,
+               "AX evidence cannot cross active processes")
+        expect(accessibilityCache.value(processID: 100, dockProcessID: nil, at: 10.1) == nil,
+               "changed Dock process evidence requires a new AX read")
+        _ = accessibilityCache.value(processID: 100, dockProcessID: 200, at: 10.9)
+        expect(accessibilityCache.value(processID: 100, dockProcessID: 200, at: 11.01) == nil,
+               "AX cache hits do not extend one-second freshness")
+        expect(accessibilityCache.value(processID: 100, dockProcessID: 200, at: 9.9) == nil,
+               "AX cache rejects reversed clock readings")
+        accessibilityCache.reset()
+        expect(accessibilityCache.value(processID: 100, dockProcessID: 200, at: 10.2) == nil,
+               "scene or session reset discards shared AX evidence")
         reportImageProcessingPerformance(observer)
         let languages = ["en-US", "en-GB", "fr-FR", "zh-Hant-TW", "zh-Hans-CN"]
         expect(SpeechLanguage.resolve(saved: "en_GB", preferred: ["fr-FR"], available: languages) == "en-GB", "saved speech language overrides system preference")
@@ -152,7 +190,7 @@ enum NativeChecks {
         expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: false) != nil, "service outage is reported separately from local asset availability")
         expect(GuidancePace.restored(nil) == .fast && GuidancePace.restored("unknown") == .fast, "fast guidance is the default")
         expect(GuidancePace.fast.maximumConcurrentRequests == 6 && GuidancePace.balanced.maximumConcurrentRequests == 1, "guidance pace bounds concurrent requests")
-        expect(GuidancePace.fast.minimumInterval == 0.035 && GuidancePace.balanced.minimumInterval == 0.25, "guidance pace uses 35ms and 250ms dispatch intervals")
+        expect(GuidancePace.fast.minimumInterval == 0.02 && GuidancePace.balanced.minimumInterval == 0.25, "guidance pace uses 20ms and 250ms dispatch intervals")
         expect(GuidancePace.fast.observationInterval == 40_000_000 && GuidancePace.balanced.observationInterval == 160_000_000, "observation cadence is independent of request completion")
         let now = Date(timeIntervalSince1970: 1_000)
         let oldDispatch = now.addingTimeInterval(-1)
@@ -206,7 +244,9 @@ enum NativeChecks {
             return (ProcessInfo.processInfo.systemUptime - start) * 1000 / 12
         }
         let validation = millisecondsPerIteration(fingerprintPair)
+        let encodesBefore = observer.imageEncodingCount
         let encoded = millisecondsPerIteration(encodedPair)
-        print(String(format: "Synthetic image processing, 3024×1964 + Dock: fingerprints %.2f ms; fingerprints + JPEGs %.2f ms (screen acquisition excluded)", validation, encoded))
+        let successfulEncodes = observer.imageEncodingCount - encodesBefore
+        print(String(format: "Synthetic image processing, 3024×1964 + Dock: fingerprints %.2f ms; fingerprints + JPEGs %.2f ms (%d forced JPEG encodes, screen acquisition excluded)", validation, encoded, successfulEncodes))
     }
 }

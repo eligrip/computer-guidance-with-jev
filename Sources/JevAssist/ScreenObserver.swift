@@ -89,15 +89,12 @@ final class ScreenObserver {
     private var preparedSnapshot: (frame: ScreenSnapshot, at: TimeInterval)?
     /// Synthetic pipeline checks distinguish actual encoding from cache hits.
     private(set) var imageEncodingCount = 0
-    // Full-scene and Dock-focused requests use different coordinate mappings.
-    // Keep their own bounded entries so alternating views does not trigger a
-    // synchronous accessibility traversal on every request.
-    private var cachedAccessibility: [String: (context: String, readAt: Date)] = [:]
+    private var cachedAccessibility = AccessibilityObservationCache()
 
     func reset() {
         sceneDetector.reset()
         preparedSnapshot = nil
-        cachedAccessibility.removeAll()
+        cachedAccessibility.reset()
     }
 
     func sameScene(_ first: ScreenSnapshot, _ second: ScreenSnapshot) -> Bool {
@@ -113,7 +110,7 @@ final class ScreenObserver {
     /// changes advance immediately; smaller real changes briefly settle.
     func observe(_ frame: ScreenSnapshot) -> (changed: Bool, stable: Bool) {
         let observation = sceneDetector.observe(sceneSample(frame), at: ProcessInfo.processInfo.systemUptime)
-        if observation.changed { cachedAccessibility.removeAll() }
+        if observation.changed { cachedAccessibility.reset() }
         return (observation.changed, observation.stable)
     }
 
@@ -300,10 +297,9 @@ final class ScreenObserver {
 
     func accessibilityContext(for frame: ScreenSnapshot) -> String? {
         guard AXIsProcessTrusted() else { return nil }
-        let identity = frame.identity
-        let readAt = Date()
-        if let cached = cachedAccessibility[identity], readAt.timeIntervalSince(cached.readAt) <= 1 {
-            return cached.context
+        let readAt = ProcessInfo.processInfo.systemUptime
+        if let cached = cachedAccessibility.value(processID: frame.processID, dockProcessID: frame.dockProcessID, at: readAt) {
+            return cached.context(for: frame)
         }
         let app = AXUIElementCreateApplication(frame.processID)
         AXUIElementSetMessagingTimeout(app, 0.03)
@@ -314,40 +310,31 @@ final class ScreenObserver {
             let window = unsafeBitCast(focused, to: AXUIElement.self)
             collectLabels(window, depth: 0, visited: &visited, deadline: Date().addingTimeInterval(0.08), into: &labels)
         }
-        var dockLabels = [String]()
+        var dockItems = [AccessibilityObservation.DockItem]()
         if let pid = frame.dockProcessID {
             let dock = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(dock, 0.02)
             visited = 0
-            collectDockLabels(dock, frame: frame, depth: 0, visited: &visited,
-                              deadline: Date().addingTimeInterval(0.06), into: &dockLabels)
+            collectDockItems(dock, depth: 0, visited: &visited,
+                             deadline: Date().addingTimeInterval(0.06), into: &dockItems)
         }
-        let context = "Active app: \(frame.appName). Window: \(frame.windowTitle). " +
-            "Visible Dock items (labels and normalized screenshot rectangles, evidence only): " + dockLabels.joined(separator: " | ") +
-            ". App accessibility labels: " + labels.joined(separator: " | ")
-        if cachedAccessibility[identity] == nil, cachedAccessibility.count >= 4,
-           let oldest = cachedAccessibility.min(by: { $0.value.readAt < $1.value.readAt })?.key {
-            cachedAccessibility.removeValue(forKey: oldest)
-        }
-        let bounded = String(context.prefix(5_000))
-        cachedAccessibility[identity] = (bounded, readAt)
-        return bounded
+        let observation = AccessibilityObservation(appLabels: labels, dockItems: dockItems)
+        cachedAccessibility.store(observation, processID: frame.processID, dockProcessID: frame.dockProcessID, at: readAt)
+        return observation.context(for: frame)
     }
 
-    private func collectDockLabels(_ element: AXUIElement, frame: ScreenSnapshot, depth: Int,
-                                   visited: inout Int, deadline: Date, into labels: inout [String]) {
-        guard depth < 5, labels.count < 40, visited < 100, Date() < deadline else { return }
+    private func collectDockItems(_ element: AXUIElement, depth: Int,
+                                  visited: inout Int, deadline: Date, into items: inout [AccessibilityObservation.DockItem]) {
+        guard depth < 5, items.count < 100, visited < 100, Date() < deadline else { return }
         visited += 1
         var role: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
-           role as? String == "AXDockItem", let rect = accessibilityRect(element),
-           frame.dockBounds.contains(where: { $0.intersects(rect) }), let normalized = frame.imageRect(forScreenRect: rect) {
+           role as? String == "AXDockItem", let rect = accessibilityRect(element) {
             for attribute in [kAXTitleAttribute, kAXDescriptionAttribute] {
                 var value: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
                    let title = value as? String, !title.isEmpty {
-                    labels.append(String(title.prefix(80)) + String(format: " [left %.3f, top %.3f, right %.3f, bottom %.3f]",
-                        Double(normalized.minX), Double(normalized.minY), Double(normalized.maxX), Double(normalized.maxY)))
+                    items.append(AccessibilityObservation.DockItem(title: String(title.prefix(80)), screenBounds: rect))
                     break
                 }
             }
@@ -356,7 +343,7 @@ final class ScreenObserver {
         guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
               let elements = children as? [AXUIElement] else { return }
         for child in elements.prefix(50) {
-            collectDockLabels(child, frame: frame, depth: depth + 1, visited: &visited, deadline: deadline, into: &labels)
+            collectDockItems(child, depth: depth + 1, visited: &visited, deadline: deadline, into: &items)
         }
     }
 

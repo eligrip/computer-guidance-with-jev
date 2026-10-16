@@ -17,13 +17,11 @@ import statistics
 import subprocess
 import time
 
-from PIL import Image, ImageDraw, ImageFont
-
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def font(size):
+    from PIL import ImageFont
     for path in ["/System/Library/Fonts/Supplemental/Arial.ttf",
                  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
         if Path(path).exists():
@@ -32,6 +30,7 @@ def font(size):
 
 
 def fixtures():
+    from PIL import Image, ImageDraw
     image = Image.new("RGB", (1000, 650), "#eef1f5")
     draw = ImageDraw.Draw(image)
     draw.text((50, 45), "Community Center", fill="#172033", font=font(32))

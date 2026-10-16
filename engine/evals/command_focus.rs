@@ -86,7 +86,7 @@ async fn live_current_commands() {
     );
 }
 
-fn synthetic_key() -> String {
+pub(super) fn synthetic_key() -> String {
     assert_eq!(std::env::var("JEV_SYNTHETIC_LIVE").as_deref(), Ok("1"));
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

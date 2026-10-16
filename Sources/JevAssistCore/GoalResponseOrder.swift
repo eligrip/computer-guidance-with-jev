@@ -34,7 +34,19 @@ public struct GoalResponseOrder: Sendable {
               let current = currentTranscript.range(of: search, options: [.backwards, .caseInsensitive]) else { return false }
         // A repeated "open it" can refer to a different object. Matching words
         // somewhere in old history do not prove this request saw that occurrence.
-        return transcript[..<requested.lowerBound] == currentTranscript[..<current.lowerBound]
+        let requestedPrefix = transcript[..<requested.lowerBound]
+        let currentPrefix = currentTranscript[..<current.lowerBound]
+        if requestedPrefix == currentPrefix { return true }
+        // Bounded conversation history drops old leading characters as speech
+        // grows. Align the occurrence within the retained window, requiring the
+        // ENTIRE retained request transcript (not just the goal's preceding
+        // words) to remain at the start of the current transcript. This permits
+        // a rolling window without confusing a later repeated command with the
+        // one the request saw. Empty leading context cannot establish alignment.
+        guard !currentPrefix.isEmpty, requestedPrefix.count > currentPrefix.count,
+              requestedPrefix.hasSuffix(currentPrefix) else { return false }
+        let removedCharacters = requestedPrefix.count - currentPrefix.count
+        return currentTranscript.hasPrefix(transcript.dropFirst(removedCharacters))
     }
 
     public mutating func accept(sequence: UInt64, selection: String?,

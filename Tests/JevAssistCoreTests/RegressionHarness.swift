@@ -55,6 +55,21 @@ enum CoreRegressionHarness {
         try expect(GoalResponseOrder.guidanceIsCurrent(requestedGoal: "Save it", currentGoal: "Save it to Downloads",
             transcript: "Open photo. Save it", currentTranscript: "Open photo. Save it to Downloads"),
                    "A growing partial of the same command starved guidance")
+        let retainedGoal = "Save the attachment"
+        let fullHistory = TranscriptContext.retainingRecent(String(repeating: "Earlier unrelated discussion. ", count: 1_000) + retainedGoal)
+        let rollingHistory = TranscriptContext.retainingRecent(fullHistory + " to Downloads")
+        try expect(GoalResponseOrder.guidanceIsCurrent(requestedGoal: retainedGoal, currentGoal: retainedGoal + " to Downloads",
+            transcript: fullHistory, currentTranscript: rollingHistory), "A bounded history trim starved a current-screen answer")
+        try expect(GoalResponseOrder.guidanceIsCurrent(requestedGoal: nil, currentGoal: retainedGoal,
+            transcript: fullHistory, currentTranscript: rollingHistory), "First selected goal failed after a verified history trim")
+        let repeatedHistory = TranscriptContext.retainingRecent(fullHistory + ". Select the other message. " + retainedGoal)
+        try expect(!GoalResponseOrder.guidanceIsCurrent(requestedGoal: retainedGoal, currentGoal: retainedGoal,
+            transcript: fullHistory, currentTranscript: repeatedHistory), "A repeated command was mistaken for retained conversation")
+        let replacedHistory = TranscriptContext.retainingRecent(String(repeating: "A completely different conversation. ", count: 1_000) + retainedGoal)
+        try expect(!GoalResponseOrder.guidanceIsCurrent(requestedGoal: retainedGoal, currentGoal: retainedGoal,
+            transcript: fullHistory, currentTranscript: replacedHistory), "Unrelated replacement history was aligned by goal text alone")
+        try expect(!GoalResponseOrder.guidanceIsCurrent(requestedGoal: retainedGoal, currentGoal: retainedGoal,
+            transcript: fullHistory, currentTranscript: retainedGoal + " to Downloads"), "Empty prefix was accepted without evidence of the same occurrence")
         let a = NormalizedBox(top: 0.1, bottom: 0.2, left: 0.3, right: 0.4)
         let b = NormalizedBox(top: 0.5, bottom: 0.6, left: 0.7, right: 0.8)
         let first = GuidanceResult(box: a, confidence: 0.9, presence: 0.95)

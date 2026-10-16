@@ -23,6 +23,22 @@ final class JevClientTests: XCTestCase {
         XCTAssertFalse(GoalResponseOrder.extendsSameCommand("Open mail", "Open Maps"))
     }
 
+    func testGuidanceSurvivesVerifiedConversationWindowTrim() {
+        let goal = "Save the attachment"
+        let original = TranscriptContext.retainingRecent(String(repeating: "Earlier unrelated discussion. ", count: 1_000) + goal)
+        let advanced = TranscriptContext.retainingRecent(original + " to Downloads")
+        XCTAssertTrue(GoalResponseOrder.guidanceIsCurrent(requestedGoal: goal, currentGoal: goal + " to Downloads",
+            transcript: original, currentTranscript: advanced))
+        let repeated = TranscriptContext.retainingRecent(original + ". Select the other message. " + goal)
+        XCTAssertFalse(GoalResponseOrder.guidanceIsCurrent(requestedGoal: goal, currentGoal: goal,
+            transcript: original, currentTranscript: repeated))
+        let unrelated = TranscriptContext.retainingRecent(String(repeating: "Different discussion. ", count: 1_500) + goal)
+        XCTAssertFalse(GoalResponseOrder.guidanceIsCurrent(requestedGoal: goal, currentGoal: goal,
+            transcript: original, currentTranscript: unrelated))
+        XCTAssertFalse(GoalResponseOrder.guidanceIsCurrent(requestedGoal: goal, currentGoal: goal,
+            transcript: original, currentTranscript: goal + " to Downloads"))
+    }
+
     func testThreeCallEvidenceAndDisagreement() async throws {
         let fixture = try EngineFixture()
         let client = fixture.client()
