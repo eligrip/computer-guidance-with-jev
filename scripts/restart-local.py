@@ -67,6 +67,13 @@ def compatible(installed: Signature, staged: Signature) -> None:
         raise RestartError("The staged app uses a different signing identity. Rebuild it with the same local signing identity before restarting; the current app has been left alone.")
 
 
+def packaged_at_ns(app: Path) -> int:
+    # build.sh copies the main executable without preserving its modification
+    # time, then signs it. ditto preserves that time when installing a stage.
+    # The enclosing directory's time can remain unchanged across normal builds.
+    return (app / "Contents/MacOS/JevAssist").stat().st_mtime_ns
+
+
 class AppKitWorkspace:
     """Small, typed Objective-C bridge over macOS's native app lifecycle API."""
     def __init__(self) -> None:
@@ -155,7 +162,9 @@ def restart(root: Path, *, dry_run: bool = False, read_signature=signature,
     installed = root / "dist/JevAssist.app"
     staged = root / ".build/next/JevAssist.app"
     old = read_signature(installed) if installed.exists() else None
-    new = read_signature(staged) if staged.exists() else None
+    stage_not_newer = (old is not None and staged.exists()
+                       and packaged_at_ns(staged) <= packaged_at_ns(installed))
+    new = read_signature(staged) if staged.exists() and not stage_not_newer else None
     if old is None and new is None:
         if dry_run:
             return "No installed app or staged app. Restart would build a staged app once, then install it."
@@ -164,8 +173,10 @@ def restart(root: Path, *, dry_run: bool = False, read_signature=signature,
     if old is not None and new is not None:
         compatible(old, new)
     promote = new is not None and (old is None or old.cdhash != new.cdhash)
+    ignored_stage_note = " The staged build is not newer, so it was ignored." if stage_not_newer else ""
     if dry_run:
-        return "Would install the verified staged app and restart this checkout’s Jev Assist." if promote else "Would restart this checkout’s installed Jev Assist; no build or update needed."
+        return ("Would install the verified staged app and restart this checkout’s Jev Assist." if promote
+                else "Would restart this checkout’s installed Jev Assist; no build or update needed." + ignored_stage_note)
 
     (root / "dist").mkdir(parents=True, exist_ok=True)
     backup_directory = root / ".build/restart-backups"
@@ -197,7 +208,7 @@ def restart(root: Path, *, dry_run: bool = False, read_signature=signature,
             if read_signature(installed) != new:
                 raise RestartError("The installed update did not match its verified staged copy.")
         workspace.launch(installed, root)
-        return "Installed the staged update and reopened Jev Assist." if promote else "Reopened Jev Assist."
+        return "Installed the staged update and reopened Jev Assist." if promote else "Reopened Jev Assist." + ignored_stage_note
     except Exception as error:
         if stopped and backup and backup.exists():
             try:
@@ -239,15 +250,18 @@ def self_test() -> None:
     def inspect(app):
         value = (app / "fixture").read_text()
         return Signature(IDENTIFIER, "different" if value == "wrong-signer" else "stable-signer", value)
-    def fixture(root, path, value):
+    def fixture(root, path, value, packaged_at):
         app = root / path
-        app.mkdir(parents=True)
+        (app / "Contents/MacOS").mkdir(parents=True)
+        executable = app / "Contents/MacOS/JevAssist"
+        executable.write_text("synthetic executable")
+        os.utime(executable, ns=(packaged_at, packaged_at))
         (app / "fixture").write_text(value)
         return app
     with tempfile.TemporaryDirectory(prefix="jev restart synthetic ") as directory:
         root = Path(directory)
-        installed = fixture(root, "dist/JevAssist.app", "old")
-        staged = fixture(root, ".build/next/JevAssist.app", "new")
+        installed = fixture(root, "dist/JevAssist.app", "old", 1_000_000_000)
+        staged = fixture(root, ".build/next/JevAssist.app", "new", 2_000_000_000)
         workspace = FakeWorkspace()
         assert "Would install" in restart(root, dry_run=True, read_signature=inspect, workspace=workspace)
         assert not workspace.calls and inspect(installed).cdhash == "old"
@@ -271,7 +285,22 @@ def self_test() -> None:
         assert workspace.calls == [("stop", installed), ("open", installed)]
         assert list((root / ".build/restart-backups").glob("JevAssist-*.app"))
         assert "no build or update" in restart(root, dry_run=True, read_signature=inspect)
-    print("Restart checks passed: dry-run, exact-path handoff, signing mismatch, rollback, update, and paths with spaces.")
+        assert packaged_at_ns(installed) == packaged_at_ns(staged)
+        # A subsequent normal build is newer than the stage left on disk.
+        (installed / "fixture").write_text("newest-normal-build")
+        os.utime(installed / "Contents/MacOS/JevAssist", ns=(3_000_000_000, 3_000_000_000))
+        # Directory timestamps do not establish build order, even if touched.
+        os.utime(staged, ns=(4_000_000_000, 4_000_000_000))
+        workspace = FakeWorkspace()
+        def no_copy(*_):
+            raise AssertionError("stale stage was copied")
+        result = restart(root, read_signature=inspect, workspace=workspace, copy=no_copy)
+        assert "not newer" in result and inspect(installed).cdhash == "newest-normal-build"
+        assert workspace.calls == [("stop", installed), ("open", installed)]
+        # Equal times are ambiguous: retain the installed build even if hashes differ.
+        os.utime(staged / "Contents/MacOS/JevAssist", ns=(3_000_000_000, 3_000_000_000))
+        assert "not newer" in restart(root, dry_run=True, read_signature=inspect)
+    print("Restart checks passed: dry-run, exact-path handoff, signing mismatch, rollback, update, stale/equal stages, and paths with spaces.")
 
 
 def main() -> int:
