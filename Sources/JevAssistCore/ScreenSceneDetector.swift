@@ -91,7 +91,6 @@ public struct ScreenSceneDetector: Sendable {
         guard a.count == count, b.count == count else { return .broad }
         var changed = 0
         var totalDifference = 0
-        var edgeChanges = 0
         var tiles = [Int](repeating: 0, count: (width / 8) * (height / 8))
         for index in 0..<count {
             let delta = abs(Int(a[index]) - Int(b[index]))
@@ -99,10 +98,6 @@ public struct ScreenSceneDetector: Sendable {
             if delta > 24 {
                 changed += 1
                 tiles[(index / width / 8) * (width / 8) + index % width / 8] += 1
-            }
-            if index % width > 0 && index % width < width - 1 && index >= width && index < count - width,
-               hasEdge(a, at: index) != hasEdge(b, at: index) {
-                edgeChanges += 1
             }
         }
         let fraction = Double(changed) / Double(count)
@@ -117,8 +112,20 @@ public struct ScreenSceneDetector: Sendable {
         // A hover can recolor an existing control without moving its edges.
         // New dialogs, text and layout alter both pixels AND edge locations.
         // Requiring several coherent tiles also rejects isolated pixel noise.
-        if coherentPixels >= minimumPixels, coherentTiles.count >= 3, edgeChanges >= minimumEdges {
-            return .localized
+        guard coherentPixels >= minimumPixels, coherentTiles.count >= 3 else { return .none }
+        // Most observations are unchanged, tiny animations, or broad page
+        // changes. Only a candidate localized change needs neighboring-pixel
+        // edge comparisons; stop once enough evidence has been found. This
+        // preserves the exact thresholds while keeping the frequent path cheap.
+        var edgeChanges = 0
+        for row in 1..<(height - 1) {
+            for column in 1..<(width - 1) {
+                let index = row * width + column
+                if hasEdge(a, at: index) != hasEdge(b, at: index) {
+                    edgeChanges += 1
+                    if edgeChanges >= minimumEdges { return .localized }
+                }
+            }
         }
         return .none
     }

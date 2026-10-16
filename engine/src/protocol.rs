@@ -91,8 +91,9 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let writer = Arc::new(Mutex::new(writer));
-    // Two current-screen evaluations plus one intermittent goal judgment.
-    let concurrency = Arc::new(Semaphore::new(3));
+    // Native cadence bounds active work; retain headroom for stale operations.
+    // Engine::send separately caps aggregate HTTP calls, including ensembles.
+    let concurrency = Arc::new(Semaphore::new(10));
     let mut tasks = JoinSet::new();
     loop {
         while tasks.try_join_next().is_some() {}

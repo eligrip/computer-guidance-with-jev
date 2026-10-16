@@ -35,7 +35,10 @@ final class SessionController: ObservableObject {
     private var loop: Task<Void, Never>?
     private var guidanceTasks: [UUID: Task<Void, Never>] = [:]
     private var guidancePump: Task<Void, Never>?
-    private var goalTask: Task<Void, Never>?
+    private var goalTasks: [UInt64: Task<Void, Never>] = [:]
+    private var goalInputs: [UInt64: String] = [:]
+    private var goalOrder = GoalResponseOrder()
+    private var goalSequence: UInt64 = 0
     private var speechTask: Task<Void, Never>?
     private var previousApp: NSRunningApplication?
     private var conversation = SessionTranscript()
@@ -55,6 +58,9 @@ final class SessionController: ObservableObject {
     private var completions: [Date] = []
     private var dispatchCount = 0
     private var lastDispatchedSampling: BoxSampling = .single
+    private var latestFrame: ScreenSnapshot?
+    private var latestFrameAt = Date.distantPast
+    private var latestFrameStable = false
 
     init() {
         speechLanguages = SpeechLanguage.available
@@ -106,6 +112,10 @@ final class SessionController: ObservableObject {
         lastDispatch = .distantPast
         lastGoalTranscript = ""
         lastGoalCheck = .distantPast
+        goalOrder = GoalResponseOrder()
+        goalSequence = 0
+        latestFrame = nil
+        latestFrameStable = false
         nextGoalAt = .distantPast
         observedAppPID = nil
         observedNoSurfaces = false
@@ -138,7 +148,10 @@ final class SessionController: ObservableObject {
         loop?.cancel(); loop = nil
         guidanceTasks.values.forEach { $0.cancel() }; guidanceTasks.removeAll()
         guidancePump?.cancel(); guidancePump = nil
-        goalTask?.cancel(); goalTask = nil
+        goalTasks.values.forEach { $0.cancel() }; goalTasks.removeAll()
+        goalInputs.removeAll()
+        latestFrame = nil
+        latestFrameStable = false
         speechTask?.cancel(); speechTask = nil
         speech.stop()
         latch.endSession()
@@ -169,6 +182,9 @@ final class SessionController: ObservableObject {
         let updated = conversation.text
         guard updated != transcript else { return }
         transcript = updated
+        // Corrected recognition must not leave an anchor whose words vanished.
+        // This changes request context only; the visible highlight stays latched.
+        if let goal, !updated.contains(goal) { self.goal = nil }
         contextRevision &+= 1
         recorder.recordContext(transcript: transcript, goal: goal)
         // New or revised speech never releases an accepted highlight.
@@ -177,14 +193,15 @@ final class SessionController: ObservableObject {
 
     /// Coalesce fast speech updates and immediately use the newest context when
     /// a response arrives. The observation timer remains a screen-change backstop.
-    private func scheduleGuidancePump() {
+    private func scheduleGuidancePump(after delay: TimeInterval = 0) {
         guard isRunning, guidancePump == nil else { return }
         let pendingSession = sessionID
         guidancePump = Task { [weak self] in
-            await Task.yield()
+            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            else { await Task.yield() }
             guard let self, !Task.isCancelled, self.isRunning, self.sessionID == pendingSession else { return }
             self.guidancePump = nil
-            self.tick()
+            self.pumpGuidance()
         }
     }
 
@@ -192,6 +209,8 @@ final class SessionController: ObservableObject {
         // Spoken intent keeps updating even while the session panel is open or
         // screen capture is temporarily unavailable.
         inferGoalIfNeeded()
+        latestFrame = nil
+        latestFrameStable = false
         guard let frontmost = NSWorkspace.shared.frontmostApplication else { return }
         if observedAppPID != frontmost.processIdentifier {
             observedAppPID = frontmost.processIdentifier
@@ -204,7 +223,7 @@ final class SessionController: ObservableObject {
             return
         }
         previousApp = frontmost
-        guard let frame = screens.capture(app: frontmost) else {
+        guard let frame = screens.capture(app: frontmost, includeJPEG: false) else {
             if screens.captureConfirmedNoSurfaces && !observedNoSurfaces {
                 observedNoSurfaces = true
                 latch.screenDidChange(); overlay.hide(); screens.reset()
@@ -221,18 +240,39 @@ final class SessionController: ObservableObject {
             latch.screenDidChange(); overlay.hide()
             recorder.recordHighlight(reason: "screen_changed")
         }
-        guard observation.stable, !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        latestFrame = frame
+        latestFrameAt = Date()
+        latestFrameStable = observation.stable
+        pumpGuidance()
+    }
+
+    /// Inference refills independently of screen capture. Several staggered
+    /// calls can reuse one exact observation; display still validates fresh pixels.
+    private func pumpGuidance() {
+        inferGoalIfNeeded()
+        guard isRunning, latestFrameStable, let observedFrame = latestFrame,
+              Date().timeIntervalSince(latestFrameAt) <= 0.25,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == observedFrame.processID,
+              !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             if transcript.isEmpty { status = "Listening · talk through what you want" }
             return
         }
         guard guidanceTasks.isEmpty || lastDispatchedSampling == boxSampling else { return }
+        let now = Date()
+        guard let client else { return }
         guard guidancePace.canDispatch(inFlight: guidanceTasks.count, lastDispatch: lastDispatch,
-                                       retryAfter: nextAllowedDispatch, now: Date(), sampling: boxSampling),
-              let client else { return }
-        // Give small Dock icons a dedicated image on alternating requests.
+                                       retryAfter: nextAllowedDispatch, now: now, sampling: boxSampling) else {
+            if guidanceTasks.count < boxSampling.maximumConcurrentBatches(pace: guidancePace), now >= nextAllowedDispatch {
+                scheduleGuidancePump(after: max(0.001, guidancePace.minimumInterval - now.timeIntervalSince(lastDispatch)))
+            }
+            return
+        }
+        guard let frame = screens.prepareForGuidance(observedFrame) else { return }
+        latestFrame = frame
+        // Give small Dock icons a dedicated image on every third request.
         // Freshness still belongs to the full original scene; coordinates belong
         // to the exact image sent to Jev.
-        let requestFrame = dispatchCount % 2 == 1 ? (frame.focusedOnDock() ?? frame) : frame
+        let requestFrame = dispatchCount % 3 == 2 ? (frame.focusedOnDock() ?? frame) : frame
         let dockOnly = !frame.dockSurfaceIDs.isEmpty && requestFrame.surfaceIDs == frame.dockSurfaceIDs
         guard let ticket = latch.makeRequest(view: dockOnly ? .dock : .scene) else { return }
         dispatchCount += 1
@@ -267,6 +307,24 @@ final class SessionController: ObservableObject {
                         latencyMS: latency, disposition: "suppressed", reason: "box_check_mode_changed")
                     return
                 }
+                guard GoalResponseOrder.guidanceIsCurrent(requestedGoal: input.goal, currentGoal: self.goal,
+                    transcript: input.transcript, currentTranscript: self.transcript) else {
+                    self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
+                        latencyMS: latency, disposition: "suppressed", reason: "spoken_command_changed")
+                    return
+                }
+                // Already-held/absent/stale answers cannot display anything. Do
+                // not re-capture and encode the screen for each such completion.
+                guard ticket.screenGeneration == self.latch.screenGeneration,
+                      self.latch.box == nil, result.box != nil else {
+                    if result.box == nil { _ = self.latch.apply(result, for: ticket) }
+                    let reason = ticket.screenGeneration != self.latch.screenGeneration ? "stale_screen_generation" :
+                        (self.latch.box != nil ? "existing_highlight_held" :
+                            (result.ensemble?.method ?? "presence_or_confidence_gate"))
+                    self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
+                        latencyMS: latency, disposition: "suppressed", reason: reason)
+                    return
+                }
                 // A new partial transcript does not invalidate a current-screen
                 // answer: otherwise continuous speech could starve all guidance.
                 // Re-capture before displaying to close the gap between ticks.
@@ -279,7 +337,7 @@ final class SessionController: ObservableObject {
                 }
                 // Discard an answer for different pixels; the observation loop
                 // owns debounce and decides when to release an existing box.
-                guard let currentFrame = self.screens.capture(app: currentApp),
+                guard let currentFrame = self.screens.capture(app: currentApp, includeJPEG: false),
                       self.screens.sameScene(frame, currentFrame) else {
                     self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
                         latencyMS: latency, disposition: "suppressed", reason: "screen_changed_during_request")
@@ -311,7 +369,7 @@ final class SessionController: ObservableObject {
                     self.requestCount += completed
                     self.updateMetrics(latencyMS: Date().timeIntervalSince(started) * 1000, completedCalls: completed)
                 }
-                let delay = serviceError?.retryAfter ?? min(15, pow(2, Double(min(self.failures, 4))) * 0.5)
+                let delay = serviceError?.retryAfter ?? min(2, pow(2, Double(min(self.failures - 1, 3))) * 0.25)
                 self.nextAllowedDispatch = max(self.nextAllowedDispatch, Date().addingTimeInterval(delay))
                 self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: nil,
                     latencyMS: Date().timeIntervalSince(started) * 1000, disposition: "failed", reason: error.localizedDescription)
@@ -319,53 +377,62 @@ final class SessionController: ObservableObject {
                 // A network failure does not erase the accepted box.
             }
         }
+        // Fill available slots without waiting for another expensive observation.
+        scheduleGuidancePump(after: guidancePace.minimumInterval)
     }
 
     private func inferGoalIfNeeded() {
-        guard goalTask == nil, Date() >= nextGoalAt, Date() >= nextAllowedDispatch,
-              transcript != lastGoalTranscript || Date().timeIntervalSince(lastGoalCheck) >= 2,
-              !transcript.isEmpty, let client else { return }
+        let now = Date()
+        guard isRunning, goalTasks.count < guidancePace.maximumConcurrentGoals,
+              now >= nextGoalAt, now >= nextAllowedDispatch,
+              transcript != lastGoalTranscript || now.timeIntervalSince(lastGoalCheck) >= guidancePace.unchangedSpeechGoalInterval,
+              !transcript.isEmpty, !goalInputs.values.contains(transcript), let client else { return }
         let text = transcript
         let previous = goal
         let requestSession = sessionID
-        let started = Date()
-        nextGoalAt = started.addingTimeInterval(guidancePace == .fast ? 0.4 : 1)
+        let started = now
+        nextGoalAt = started.addingTimeInterval(guidancePace.changedSpeechGoalInterval)
         lastGoalTranscript = text
         lastGoalCheck = started
-        goalTask = Task { [weak self] in
+        goalSequence &+= 1
+        let sequence = goalSequence
+        goalInputs[sequence] = text
+        goalTasks[sequence] = Task { [weak self] in
             do {
                 let inferred = try await client.inferGoal(transcript: text, previousGoal: previous)
                 guard let self, !Task.isCancelled, self.isRunning, self.sessionID == requestSession else { return }
-                self.goalTask = nil
+                self.goalTasks.removeValue(forKey: sequence)
+                self.goalInputs.removeValue(forKey: sequence)
+                defer { self.scheduleGuidancePump() }
                 self.goalRequestCount += 1
                 self.updateMetrics(latencyMS: Date().timeIntervalSince(started) * 1000)
-                let speechAdvanced = self.transcript != text
-                if speechAdvanced {
-                    // Reconsider new words immediately, but continuous speech
-                    // must not starve a still-present verbatim goal selection.
+                if self.transcript != text {
                     self.lastGoalTranscript = ""
                     self.nextGoalAt = .distantPast
-                    self.scheduleGuidancePump()
-                    if inferred == nil { return }
                 }
-                // Keep a verbatim anchor when new speech merely extends the same
-                // thought. Reject text that a corrected partial has removed.
-                if let inferred {
-                    guard self.transcript.contains(inferred) || (inferred == previous && self.goal == previous) else { return }
+                // A parallel check may say "keep previous" using an anchor
+                // another completed check already replaced. Rejudge it with
+                // current context instead of restoring that old command.
+                if GoalResponseOrder.echoesStaleAnchor(selection: inferred, requestedPrevious: previous, currentGoal: self.goal) {
+                    self.lastGoalTranscript = ""
+                    self.nextGoalAt = .distantPast
+                    return
                 }
+                guard self.goalOrder.accept(sequence: sequence, selection: inferred,
+                    requestedTranscript: text, currentTranscript: self.transcript) else { return }
                 if inferred != self.goal {
                     self.goal = inferred
                     self.contextRevision &+= 1
                     self.recorder.recordContext(transcript: self.transcript, goal: inferred)
-                    self.scheduleGuidancePump()
                 }
             } catch {
-                guard let self, !Task.isCancelled, self.sessionID == requestSession else { return }
-                self.goalTask = nil
+                guard let self, !Task.isCancelled, self.isRunning, self.sessionID == requestSession else { return }
+                self.goalTasks.removeValue(forKey: sequence)
+                self.goalInputs.removeValue(forKey: sequence)
                 self.lastGoalTranscript = ""
                 let serviceError = error as? JevError
-                let retry = serviceError?.retryAfter ?? 5
-                self.nextGoalAt = Date().addingTimeInterval(retry)
+                let retry = serviceError?.retryAfter ?? 0.5
+                self.nextGoalAt = max(self.nextGoalAt, Date().addingTimeInterval(retry))
                 if serviceError?.isRetryable == true {
                     self.nextAllowedDispatch = max(self.nextAllowedDispatch, Date().addingTimeInterval(retry))
                 }

@@ -1,5 +1,29 @@
 # Box consensus experiment
 
+## Current-command and concurrency checks
+
+Generate the synthetic three-button screen, then explicitly opt into provider calls:
+
+```sh
+python3 engine/evals/make_command_fixture.py
+JEV_SYNTHETIC_LIVE=1 cargo test --manifest-path engine/Cargo.toml live_current_commands -- --ignored --nocapture
+JEV_SYNTHETIC_LIVE=1 cargo test --manifest-path engine/Cargo.toml live_fast_guidance_throughput -- --ignored --nocapture
+```
+
+The first test checks 15 exact-source goal transitions and, when the generated
+image exists, two Boxes that must advance beyond the saved earlier action. The
+second makes 20 calls across two rounds of a two-target baseline and a simultaneous
+six-target/two-goal burst. Both load the ignored local key without printing it and
+use synthetic inputs only. These tests are ignored by ordinary offline test runs.
+
+On October 15, 2026, all 15 goal cases and both Box cases passed. The two eight-call
+bursts completed in 231 ms and 180 ms with zero errors; the warm two-target baseline
+completed in 153 ms. These are short provider bursts, not sustained call rates or
+desktop interaction latency. Capture, speech, screen changes, network conditions,
+and provider rate limits still affect the application.
+
+## Consensus evaluation
+
 Build the Rust engine, install Pillow in the Python environment if needed, and run:
 
 ```sh

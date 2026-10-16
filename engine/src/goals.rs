@@ -9,7 +9,7 @@ static SENTENCES: LazyLock<Regex> =
 // Speech recognizers do not always add punctuation before a change of mind.
 // These are candidate boundaries only; Jev decides whether a span is an intent.
 static CLAUSE_STARTS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:actually|instead|now|but|never\s+mind|forget\s+(?:about\s+)?that)\b|\b(?:(?:i|we)\s+(?:want|need|would\s+like|would\s+rather|am\s+trying|are\s+trying|am\s+looking|are\s+looking)|(?:i|we)['’]d\s+(?:like|rather)|(?:can|could|would|will)\s+you|(?:can|could)\s+(?:i|we)|(?:help|show|tell|find|give)\s+me|(?:what|where|which|how|when|who)\s+(?:is|are|do|does|can|could|should|would|will)|let['’]s)\b").unwrap()
+    Regex::new(r"(?i)\b(?:actually|instead|now|but|never\s+mind|forget\s+(?:about\s+)?that)\b|\b(?:and\s+then|then|next|okay|ok|alright)\s+(?:please\s+)?(?:(?:do\s+not|don['’]t)\s+)?(?:open|close|select|click|press|choose|switch|download|save|print|upload|attach|rename|delete|remove|search|filter|sort|scroll|go|join|leave|send|share|copy|paste|check|turn)\b|\b(?:(?:i|we)\s+(?:want|need|would\s+like|would\s+rather|am\s+trying|are\s+trying|am\s+looking|are\s+looking)|(?:i|we)['’]d\s+(?:like|rather)|(?:can|could|would|will)\s+you|(?:can|could)\s+(?:i|we)|(?:help|show|tell|find|give)\s+me|(?:what|where|which|how|when|who)\s+(?:(?:one|ones)\s+)?(?:is|are|do|does|can|could|should|would|will)|let['’]s)\b").unwrap()
 });
 static TRANSITION_ONLY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -128,7 +128,7 @@ fn repeated_request_starts(text: &str) -> Vec<usize> {
         ) {
             continue;
         }
-        for length in 3..=40.min((words.len() - index) / 2) {
+        for length in 2..=40.min((words.len() - index) / 2) {
             if normalized[index..index + length] == normalized[index + length..index + length * 2] {
                 starts.push(words[index].start());
                 let mut next = index + length;
@@ -155,13 +155,12 @@ pub struct SpeechContext<'a> {
 /// The two conversation fields form an exact partition, so history is present
 /// once and cannot masquerade as equally recent instructions. The latest clause
 /// is a small focus signal, not a generated summary or replacement for context.
-pub fn speech_context<'a>(transcript: &'a str, selected_goal: Option<&str>) -> SpeechContext<'a> {
+pub fn speech_context<'a>(transcript: &'a str, _selected_goal: Option<&str>) -> SpeechContext<'a> {
     let candidates = candidates(transcript);
     let latest = candidates.first();
-    let start = selected_goal
-        .filter(|goal| !goal.is_empty())
-        .and_then(|goal| transcript.rfind(goal))
-        .unwrap_or_else(|| latest.map_or(transcript.len(), |span| span.source_start));
+    // A saved broad goal must not stretch the current request back over older
+    // commands. History remains available separately for pronoun resolution.
+    let start = latest.map_or(transcript.len(), |span| span.source_start);
     SpeechContext {
         earlier_conversation: &transcript[..start],
         current_user_request: &transcript[start..],
@@ -361,15 +360,12 @@ mod tests {
     }
 
     #[test]
-    fn current_request_uses_last_exact_anchor_and_preserves_background() {
+    fn current_request_focuses_latest_substep_and_preserves_background() {
         let goal = "Find Zoë’s volunteer roles.";
         let source =
             format!("{goal} Earlier discussion of branding. {goal} Which one fits Saturday?");
         let context = speech_context(&source, Some(goal));
-        assert_eq!(
-            context.current_user_request,
-            format!("{goal} Which one fits Saturday?")
-        );
+        assert_eq!(context.current_user_request, "Which one fits Saturday?");
         assert_eq!(context.latest_spoken_clause, "Which one fits Saturday?");
         assert_eq!(
             format!(
@@ -406,5 +402,37 @@ mod tests {
         let blank = speech_context(" \n ", None);
         assert_eq!(blank.current_user_request, "");
         assert_eq!(blank.earlier_conversation, " \n ");
+    }
+
+    #[test]
+    fn unpunctuated_substeps_preserve_exact_text_and_negation() {
+        for latest in [
+            "then download it",
+            "next open the other one",
+            "okay don't delete it",
+        ] {
+            let source = format!("Open the shared album {latest}");
+            let values = candidates(&source);
+            assert_eq!(values[0].text, latest);
+            assert_eq!(
+                &source[values[0].source_start..values[0].source_end],
+                latest
+            );
+            let context = speech_context(&source, Some("Open the shared album"));
+            assert_eq!(context.current_user_request, latest);
+            assert_eq!(context.earlier_conversation, "Open the shared album ");
+        }
+        assert_eq!(
+            candidates("Open next week's calendar")[0].text,
+            "Open next week's calendar"
+        );
+    }
+
+    #[test]
+    fn short_repeated_commands_use_the_last_exact_occurrence() {
+        let source = "Open the album download it download it";
+        let values = candidates(source);
+        assert_eq!(values[0].text, "download it");
+        assert_eq!(values[0].source_start, source.rfind("download it").unwrap());
     }
 }

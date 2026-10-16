@@ -8,7 +8,7 @@ public enum BoxSampling: String, CaseIterable, Identifiable, Sendable {
     public static func restored(_ value: String?) -> Self { value.flatMap(Self.init(rawValue:)) ?? .single }
 
     public func maximumConcurrentBatches(pace: GuidancePace) -> Int {
-        self == .consensus ? 1 : pace.maximumConcurrentRequests
+        self == .consensus ? (pace == .fast ? 2 : 1) : pace.maximumConcurrentRequests
     }
 }
 

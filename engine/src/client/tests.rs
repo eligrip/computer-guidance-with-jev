@@ -5,6 +5,9 @@ use tokio::{
     task::JoinHandle,
 };
 
+#[path = "../../evals/command_focus.rs"]
+mod command_focus;
+
 fn fixture_request(op: &str) -> Request {
     let input = if op == "guidance" {
         json!({
@@ -29,10 +32,9 @@ fn guidance_answer(presence: f64, confidence: f64) -> Value {
     }})
 }
 
-fn goal_answer(choice: &str, changed: f64) -> Value {
+fn goal_answer(choice: &str, confidence: f64) -> Value {
     json!({ "answers": {
-        "goal": { "type": "choice", "choice": choice, "confidence": 0.8 },
-        "goal_changed": { "type": "noul", "noul": changed }
+        "goal": { "type": "choice", "choice": choice, "confidence": confidence }
     }})
 }
 
@@ -49,10 +51,7 @@ fn guidance_partitions_current_request_from_obsolete_history() {
     input.goal = Some(goal.to_owned());
     let payload = guidance_payload(&request.model, input, "synthetic-image");
     let state = &payload["state"];
-    assert_eq!(
-        state["current_user_request"],
-        format!("{goal} which ones are on Saturday")
-    );
+    assert_eq!(state["current_user_request"], "which ones are on Saturday");
     assert!(
         state["earlier_conversation"]
             .as_str()
@@ -335,22 +334,30 @@ async fn three_samples_overlap_and_share_identical_json_and_image() {
 }
 
 #[tokio::test]
-async fn shared_http_limit_covers_two_groups_and_a_goal() {
+async fn shared_http_limit_caps_three_groups_and_two_goals_at_ten() {
     use std::sync::atomic::Ordering;
     tokio::time::timeout(Duration::from_secs(5), async {
         let (engine, server, maximum) =
-            concurrent_fixture_server(vec![FixtureReply::success(); 7]).await;
+            concurrent_fixture_server(vec![FixtureReply::success(); 11]).await;
         let group = three_sample_request();
         let goal = fixture_request("goal");
         let clone = engine.clone();
-        let (one, two, goal) = tokio::join!(
+        let (one, two, three, first_goal, second_goal) = tokio::join!(
             engine.execute(&group),
             clone.execute(&group),
-            engine.execute(&goal)
+            engine.execute(&group),
+            engine.execute(&goal),
+            clone.execute(&goal)
         );
-        assert!(one.is_ok() && two.is_ok() && goal.is_ok());
-        assert_eq!(server.await.unwrap().len(), 7);
-        assert_eq!(maximum.load(Ordering::SeqCst), 4);
+        assert!(
+            one.is_ok()
+                && two.is_ok()
+                && three.is_ok()
+                && first_goal.is_ok()
+                && second_goal.is_ok()
+        );
+        assert_eq!(server.await.unwrap().len(), 11);
+        assert_eq!(maximum.load(Ordering::SeqCst), 10);
     })
     .await
     .expect("Global HTTP-limit fixture timed out");
@@ -556,10 +563,11 @@ fn goal_wire_request_preserves_options_and_rejects_generated_values() {
     let criteria = payload["questions"]["goal"]["criteria"]
         .as_object()
         .unwrap();
-    assert_eq!(criteria.len(), candidates.len() + 1);
+    assert_eq!(criteria.len(), candidates.len() + 2);
     assert!(criteria.contains_key("none"));
-    assert!(!criteria.contains_key("keep_previous"));
-    assert_eq!(payload["questions"]["goal_changed"]["type"], "noul");
+    assert!(criteria.contains_key("keep_previous"));
+    assert_eq!(payload["questions"].as_object().unwrap().len(), 1);
+    assert!(payload["questions"].get("goal_changed").is_none());
     let good = goal_answer(&candidates[0].id, 0.9);
     assert_eq!(
         parse_goal(&serde_json::to_vec(&good).unwrap(), &candidates, None).unwrap(),
@@ -570,34 +578,45 @@ fn goal_wire_request_preserves_options_and_rejects_generated_values() {
 }
 
 #[test]
-fn fresh_goal_replaces_old_anchor_while_substeps_and_chatter_keep_it() {
+fn current_command_directly_replaces_old_goal_without_a_change_gate() {
     let previous = "I want to find Jane’s attachment.";
-    let speech = format!("{previous} I want to join the Zoom call");
-    let candidates = goals::candidates(&speech);
-    let changed = serde_json::to_vec(&goal_answer(&candidates[0].id, 0.96)).unwrap();
-    assert_eq!(
-        parse_goal(&changed, &candidates, Some(previous))
+    for latest in [
+        "I want to join the Zoom call",
+        "Download it.",
+        "Open the other one.",
+        "Go back.",
+    ] {
+        let speech = format!("{previous} {latest}");
+        let candidates = goals::candidates(&speech);
+        // No additional judgment or confidence threshold vetoes a valid Choice.
+        let mut answer = goal_answer(&candidates[0].id, 0.02);
+        answer["answers"]["goal_changed"] = json!({"type":"noul", "noul":0.0});
+        assert_eq!(
+            parse_goal(
+                &serde_json::to_vec(&answer).unwrap(),
+                &candidates,
+                Some(previous)
+            )
             .unwrap()
             .as_deref(),
-        Some("I want to join the Zoom call")
-    );
-    // The speculative Choice is ignored when the independent judgment says
-    // recent speech is just a substep or unrelated conversation.
-    for speech in [
-        "Where should I click to find that attachment?",
-        "It is raining outside.",
-    ] {
-        let candidates = goals::candidates(speech);
-        let unchanged = serde_json::to_vec(&goal_answer(&candidates[0].id, 0.02)).unwrap();
-        assert_eq!(
-            parse_goal(&unchanged, &candidates, Some(previous))
-                .unwrap()
-                .as_deref(),
-            Some(previous)
+            Some(latest)
         );
-        assert_eq!(parse_goal(&unchanged, &candidates, None).unwrap(), None);
     }
-    let cancelled = serde_json::to_vec(&goal_answer("none", 0.98)).unwrap();
+}
+
+#[test]
+fn explicit_keep_and_none_distinguish_chatter_from_completion() {
+    let previous = "Find the attachment.";
+    let candidates = goals::candidates("It is raining outside.");
+    let keep = serde_json::to_vec(&goal_answer("keep_previous", 0.99)).unwrap();
+    assert_eq!(
+        parse_goal(&keep, &candidates, Some(previous))
+            .unwrap()
+            .as_deref(),
+        Some(previous)
+    );
+    assert_eq!(parse_goal(&keep, &candidates, None).unwrap(), None);
+    let cancelled = serde_json::to_vec(&goal_answer("none", 0.99)).unwrap();
     assert_eq!(
         parse_goal(&cancelled, &candidates, Some(previous)).unwrap(),
         None
@@ -605,7 +624,7 @@ fn fresh_goal_replaces_old_anchor_while_substeps_and_chatter_keep_it() {
 }
 
 #[test]
-fn goal_change_probability_is_validated_without_accepting_a_fake_branch() {
+fn goal_choice_validates_probability_and_never_copies_unsupplied_text() {
     let candidates = goals::candidates("Join the call");
     for probability in [-0.1, 1.1] {
         assert!(
@@ -617,8 +636,28 @@ fn goal_change_probability_is_validated_without_accepting_a_fake_branch() {
             .is_err()
         );
     }
-    let fake_keep = serde_json::to_vec(&goal_answer("keep_previous", 0.99)).unwrap();
-    assert!(parse_goal(&fake_keep, &candidates, Some("old task")).is_err());
+    let unknown = serde_json::to_vec(&goal_answer("invented_summary", 0.99)).unwrap();
+    assert!(parse_goal(&unknown, &candidates, Some("old task")).is_err());
+    let mut wrong_type = goal_answer("source_0", 0.9);
+    wrong_type["answers"]["goal"]["type"] = json!("noul");
+    assert!(parse_goal(&serde_json::to_vec(&wrong_type).unwrap(), &candidates, None).is_err());
+}
+
+#[tokio::test]
+async fn empty_speech_preserves_prior_context_without_network() {
+    let mut request = fixture_request("goal");
+    let Operation::Goal(input) = &mut request.operation else {
+        unreachable!()
+    };
+    input.transcript = " \n ".to_owned();
+    input.previous_goal = Some("Save this photo".to_owned());
+    let result = Engine::new().unwrap().execute(&request).await.unwrap();
+    assert_eq!(
+        result,
+        ResultValue::Goal {
+            goal: Some("Save this photo".to_owned())
+        }
+    );
 }
 
 #[tokio::test]
@@ -699,7 +738,7 @@ async fn invalid_config_is_rejected_without_a_request() {
 }
 
 #[tokio::test]
-async fn protocol_runs_three_requests_at_a_time_and_delivers_all_ids() {
+async fn protocol_runs_ten_operations_at_a_time_and_delivers_all_ids() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -715,7 +754,7 @@ async fn protocol_runs_three_requests_at_a_time_and_delivers_all_ids() {
         let observed = maximum.clone();
         let server = tokio::spawn(async move {
             let mut tasks = tokio::task::JoinSet::new();
-            for _ in 0..6 {
+            for _ in 0..20 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let active = active.clone();
                 let maximum = maximum.clone();
@@ -737,7 +776,7 @@ async fn protocol_runs_three_requests_at_a_time_and_delivers_all_ids() {
         let (read, write) = tokio::io::split(backend);
         let running = tokio::spawn(crate::protocol::serve(BufReader::new(read), write, engine));
         let (mut output, mut input) = tokio::io::split(native);
-        for index in 0..6 {
+        for index in 0..20 {
             let mut line = serde_json::to_vec(&json!({
                 "id": format!("request-{index}"), "op": "goal", "api_key": "fake", "model": "jev-1.14.0",
                 "minimum_presence": 0.65, "minimum_confidence": 0.25,
@@ -752,11 +791,11 @@ async fn protocol_runs_three_requests_at_a_time_and_delivers_all_ids() {
         running.await.unwrap().unwrap();
         server.await.unwrap();
         let values: Vec<Value> = responses.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        assert_eq!(values.len(), 6);
-        for index in 0..6 {
+        assert_eq!(values.len(), 20);
+        for index in 0..20 {
             assert!(values.iter().any(|value| value["id"] == format!("request-{index}") && value["ok"] == true));
         }
-        assert_eq!(observed.load(Ordering::SeqCst), 3, "Engine allows two guidance calls plus one goal call");
+        assert_eq!(observed.load(Ordering::SeqCst), 10, "Engine bounds concurrent operations while admitting fast native cadence");
     }).await.expect("Bounded concurrency test timed out");
 }
 

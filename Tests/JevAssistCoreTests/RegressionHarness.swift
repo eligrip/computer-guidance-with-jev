@@ -22,6 +22,39 @@ enum CoreRegressionHarness {
     static func main() async throws {
         try ScreenSceneChecks.run { try expect($0, $1) }
         try TranscriptChecks.run { try expect($0, $1) }
+        var goalOrder = GoalResponseOrder()
+        try expect(GoalResponseOrder.echoesStaleAnchor(selection: "Open Mail", requestedPrevious: "Open Mail", currentGoal: "Open Maps"),
+                   "Parallel keep-previous response restored a superseded goal")
+        try expect(GoalResponseOrder.echoesStaleAnchor(selection: nil, requestedPrevious: nil, currentGoal: "Open Maps"),
+                   "Parallel old nil anchor erased a newly selected goal")
+        try expect(!GoalResponseOrder.echoesStaleAnchor(selection: "Save file", requestedPrevious: "Open Mail", currentGoal: "Open Maps"),
+                   "A real newer source selection was mistaken for stale retention")
+        let twoCommands = "Open mail. Save the attachment."
+        try expect(goalOrder.accept(sequence: 2, selection: "Save the attachment.", requestedTranscript: twoCommands,
+                                    currentTranscript: twoCommands), "Newest spoken command was rejected")
+        try expect(!goalOrder.accept(sequence: 1, selection: "Open mail.", requestedTranscript: "Open mail.",
+                                     currentTranscript: twoCommands), "Late old goal displaced the newer command")
+        try expect(!goalOrder.accept(sequence: 3, selection: "Open mail.", requestedTranscript: "Open mail.",
+                                     currentTranscript: "Open Maps."), "Corrected-away speech restored an old goal")
+        try expect(!goalOrder.accept(sequence: 4, selection: nil, requestedTranscript: "Open",
+                                     currentTranscript: "Open Maps."), "Old abstention erased new speech")
+        try expect(goalOrder.accept(sequence: 5, selection: "Open Maps.", requestedTranscript: "Open Maps.",
+                                    currentTranscript: "Open Maps. Please"), "Continuous speech starved a valid goal")
+        try expect(GoalResponseOrder.extendsSameCommand("Save the attachment", "Save the attachment to Downloads."),
+                   "Extending a command invalidated every in-flight target")
+        try expect(!GoalResponseOrder.extendsSameCommand("Open mail", "Open Maps"), "Different commands were treated as extensions")
+        try expect(GoalResponseOrder.guidanceIsCurrent(requestedGoal: nil, currentGoal: "Open Maps", transcript: "Open Maps", currentTranscript: "Open Maps"),
+                   "First goal selection suppressed a target that already saw those words")
+        try expect(!GoalResponseOrder.guidanceIsCurrent(requestedGoal: "Open mail", currentGoal: "Open Maps", transcript: "Open mail", currentTranscript: "Open mail. Open Maps"),
+                   "A target that never saw the new command was accepted")
+        try expect(!GoalResponseOrder.guidanceIsCurrent(requestedGoal: "Open mail", currentGoal: nil, transcript: "Open mail", currentTranscript: "Open mail. Cancel that"),
+                   "Cancelled goal allowed an old target")
+        try expect(!GoalResponseOrder.guidanceIsCurrent(requestedGoal: "Open Maps", currentGoal: "Open Mail",
+            transcript: "Open Mail. Open Maps.", currentTranscript: "Open Mail. Open Maps. Open Mail."),
+                   "An earlier matching phrase was confused with a repeated new command")
+        try expect(GoalResponseOrder.guidanceIsCurrent(requestedGoal: "Save it", currentGoal: "Save it to Downloads",
+            transcript: "Open photo. Save it", currentTranscript: "Open photo. Save it to Downloads"),
+                   "A growing partial of the same command starved guidance")
         let a = NormalizedBox(top: 0.1, bottom: 0.2, left: 0.3, right: 0.4)
         let b = NormalizedBox(top: 0.5, bottom: 0.6, left: 0.7, right: 0.8)
         let first = GuidanceResult(box: a, confidence: 0.9, presence: 0.95)
@@ -121,6 +154,11 @@ enum CoreRegressionHarness {
         let pid1 = try await client.inferGoal(transcript: "pid", previousGoal: nil)
         let pid2 = try await client.inferGoal(transcript: "pid", previousGoal: nil)
         try expect(pid1 == pid2, "Adapter did not reuse the same Rust subprocess")
+        let burst = (0..<8).map { index in Task { try await client.inferGoal(transcript: "slow:burst-\(index)", previousGoal: nil) } }
+        for (index, request) in burst.enumerated() {
+            let value = try await request.value
+            try expect(value == "slow:burst-\(index)", "Eight bounded requests could not cross the native pipe together")
+        }
         let none = try await client.inferGoal(transcript: "none", previousGoal: "old goal")
         try expect(none == nil, "Nil goal was not preserved")
         let fragmented = try await client.inferGoal(transcript: "fragment", previousGoal: nil)
@@ -150,7 +188,7 @@ enum CoreRegressionHarness {
         let afterCancel = try await client.inferGoal(transcript: "after-cancel", previousGoal: nil)
         try expect(afterCancel == "after-cancel", "Cancellation broke unrelated requests")
         let boundedClient = fixture.client(timeout: 2)
-        let staleRequests = (0..<4).map { _ in Task { try await boundedClient.inferGoal(transcript: "hang", previousGoal: nil) } }
+        let staleRequests = (0..<10).map { _ in Task { try await boundedClient.inferGoal(transcript: "hang", previousGoal: nil) } }
         try await Task.sleep(nanoseconds: 100_000_000)
         for request in staleRequests { request.cancel() }
         for request in staleRequests { _ = try? await request.value }

@@ -45,7 +45,7 @@ final class RustEngineTransport: @unchecked Sendable {
             return try await withCheckedThrowingContinuation { continuation in
                 queue.async { [self] in
                     guard !cancellation.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                    guard outstanding.count < 4 else {
+                    guard outstanding.count < 10 else {
                         continuation.resume(throwing: JevError.engine(message: "Finishing the previous guidance requests…", retryAfter: 0.25))
                         return
                     }

@@ -2,8 +2,8 @@ import AVFoundation
 import Speech
 import JevAssistCore
 
-/// Uses provisional hypotheses immediately. A recognizer restart commits only the
-/// latest hypothesis once, so replacement partials never duplicate conversation.
+/// Uses provisional hypotheses immediately and preserves separately timed
+/// utterances even when Apple rolls its partial text within one request.
 @MainActor
 final class SpeechTranscriber {
     var onText: ((String) -> Void)?
@@ -103,7 +103,9 @@ final class SpeechTranscriber {
             Task { @MainActor in
                 guard let self, self.running, self.generation == recognitionID else { return }
                 if let result {
-                    if self.history.updatePartial(result.bestTranscription.formattedString, segmentID: recognitionID) {
+                    let transcription = result.bestTranscription
+                    if self.history.updatePartial(transcription.formattedString, segmentID: recognitionID,
+                                                  audioRange: Self.audioRange(for: transcription)) {
                         self.onText?(self.fullTranscript)
                     }
                     self.failures = 0
@@ -134,6 +136,19 @@ final class SpeechTranscriber {
 
     private var fullTranscript: String {
         history.text
+    }
+
+    /// Apple documents segment times in the recognition request's audio stream.
+    /// Some provisional results have no useful timing; never infer a boundary
+    /// from their shorter text, confidence, or how long the user paused.
+    private static func audioRange(for transcription: SFTranscription) -> SpeechTranscriptAudioRange? {
+        let segments = transcription.segments
+        guard let first = segments.first,
+              segments.allSatisfy({ $0.timestamp.isFinite && $0.timestamp >= 0 &&
+                  $0.duration.isFinite && $0.duration > 0 }),
+              zip(segments, segments.dropFirst()).allSatisfy({ $0.timestamp <= $1.timestamp }),
+              let end = segments.map({ $0.timestamp + $0.duration }).max() else { return nil }
+        return SpeechTranscriptAudioRange(start: first.timestamp, end: end)
     }
 
     private func scheduleRestart(after delay: Double) {

@@ -13,10 +13,10 @@ struct ScreenSnapshot {
     let windowTitle: String
     /// Core Graphics desktop coordinates: origin is upper-left of primary screen.
     let screenBounds: CGRect
-    let jpeg: Data
+    var jpeg: Data
     let fingerprint: [UInt8]
     /// Fractional image area occupied by captured surfaces, excluding padding.
-    let imageContentRect: CGRect
+    var imageContentRect: CGRect
     let surfaceIDs: [CGWindowID]
     var surfaceBounds: [CGRect] = []
     var dockProcessID: pid_t? = nil
@@ -25,6 +25,10 @@ struct ScreenSnapshot {
     var dockSurfaceIDs: [CGWindowID] = []
     var dockJPEG: Data? = nil
     var dockImageContentRect: CGRect? = nil
+    /// Retained only for deferred encoding. Preparing a request consumes these
+    /// exact captures rather than reading the screen a second time.
+    var capturedImage: CGImage? = nil
+    var capturedDockImage: CGImage? = nil
 
     var identity: String {
         "\(processID):\(surfaceIDs):\(surfaceBounds):\(screenBounds.origin.x):\(screenBounds.origin.y):\(screenBounds.width):\(screenBounds.height)"
@@ -82,15 +86,18 @@ final class ScreenObserver {
     /// by read/capture failures is never reported as confirmed disappearance.
     private(set) var captureConfirmedNoSurfaces = false
     private var sceneDetector = ScreenSceneDetector()
-    private var cachedAccessibility = ""
-    private var accessibilityReadAt = Date.distantPast
-    private var accessibilityIdentity = ""
+    private var preparedSnapshot: (frame: ScreenSnapshot, at: TimeInterval)?
+    /// Synthetic pipeline checks distinguish actual encoding from cache hits.
+    private(set) var imageEncodingCount = 0
+    // Full-scene and Dock-focused requests use different coordinate mappings.
+    // Keep their own bounded entries so alternating views does not trigger a
+    // synchronous accessibility traversal on every request.
+    private var cachedAccessibility: [String: (context: String, readAt: Date)] = [:]
 
     func reset() {
         sceneDetector.reset()
-        accessibilityIdentity = ""
-        cachedAccessibility = ""
-        accessibilityReadAt = .distantPast
+        preparedSnapshot = nil
+        cachedAccessibility.removeAll()
     }
 
     func sameScene(_ first: ScreenSnapshot, _ second: ScreenSnapshot) -> Bool {
@@ -106,11 +113,14 @@ final class ScreenObserver {
     /// changes advance immediately; smaller real changes briefly settle.
     func observe(_ frame: ScreenSnapshot) -> (changed: Bool, stable: Bool) {
         let observation = sceneDetector.observe(sceneSample(frame), at: ProcessInfo.processInfo.systemUptime)
-        if observation.changed { accessibilityIdentity = "" }
+        if observation.changed { cachedAccessibility.removeAll() }
         return (observation.changed, observation.stable)
     }
 
-    func capture(app: NSRunningApplication) -> ScreenSnapshot? {
+    /// Fingerprint-only observations still read fresh pixels and geometry, but
+    /// avoid full-image resampling and JPEG compression on the observation and
+    /// response-validation paths. Call prepareForGuidance before sending one.
+    func capture(app: NSRunningApplication, includeJPEG: Bool = true) -> ScreenSnapshot? {
         captureConfirmedNoSurfaces = false
         guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
@@ -165,11 +175,12 @@ final class ScreenObserver {
         guard let image = CGImage(windowListFromArrayScreenBounds: bounds,
                                   windowArray: windowArray,
                                   imageOption: [.boundsIgnoreFraming, .bestResolution]),
-              let prepared = prepare(image), let fingerprint = fingerprint(image) else { return nil }
+              let fingerprint = fingerprint(image) else { return nil }
         var snapshot = ScreenSnapshot(windowID: selection.anchor.id, processID: app.processIdentifier, bundleID: app.bundleIdentifier,
                               appName: app.localizedName ?? "Application", windowTitle: selection.anchor.title,
-                              screenBounds: bounds, jpeg: prepared.data, fingerprint: fingerprint,
-                              imageContentRect: prepared.contentRect, surfaceIDs: surfaceIDs)
+                              screenBounds: bounds, jpeg: Data(), fingerprint: fingerprint,
+                              imageContentRect: ImageLayout(image).contentRect, surfaceIDs: surfaceIDs)
+        snapshot.capturedImage = image
         snapshot.surfaceBounds = selection.surfaceBounds
         snapshot.dockProcessID = selection.dockSurfaces.first?.processID
         snapshot.dockBounds = selection.dockBounds
@@ -182,13 +193,50 @@ final class ScreenObserver {
                               width: dockArea.width * scaleX, height: dockArea.height * scaleY).integral
             if let dockImage = image.cropping(to: crop) {
                 snapshot.dockFingerprint = self.fingerprint(dockImage) ?? []
-                if let dockPrepared = prepare(dockImage) {
-                    snapshot.dockJPEG = dockPrepared.data
-                    snapshot.dockImageContentRect = dockPrepared.contentRect
-                }
+                snapshot.capturedDockImage = dockImage
+                snapshot.dockImageContentRect = ImageLayout(dockImage).contentRect
             }
         }
-        return snapshot
+        return includeJPEG ? prepareForGuidance(snapshot) : snapshot
+    }
+
+    /// Encode once when a request slot is available. The returned snapshot has
+    /// the same pixels, fingerprints, geometry and identity as its observation,
+    /// and drops the larger raw images so in-flight requests retain only JPEGs.
+    func prepareForGuidance(_ frame: ScreenSnapshot,
+                            at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> ScreenSnapshot? {
+        if !frame.jpeg.isEmpty { return frame }
+        // Reuse only an identical observation, never the looser sameScene
+        // judgment that intentionally tolerates caret/hover changes. Even exact
+        // thumbnails can miss tiny content, so refresh at least every 0.5s.
+        // Cache hits do not extend this deadline or affect the highlight latch.
+        if let cached = preparedSnapshot, now >= cached.at, now - cached.at <= 0.5,
+           cached.frame.identity == frame.identity,
+           cached.frame.fingerprint == frame.fingerprint,
+           cached.frame.dockFingerprint == frame.dockFingerprint,
+           cached.frame.imageContentRect == frame.imageContentRect,
+           cached.frame.dockImageContentRect == frame.dockImageContentRect {
+            var ready = frame
+            ready.jpeg = cached.frame.jpeg
+            ready.imageContentRect = cached.frame.imageContentRect
+            ready.dockJPEG = cached.frame.dockJPEG
+            ready.dockImageContentRect = cached.frame.dockImageContentRect
+            ready.capturedImage = nil
+            ready.capturedDockImage = nil
+            return ready
+        }
+        guard let image = frame.capturedImage, let prepared = prepare(image) else { return nil }
+        var ready = frame
+        ready.jpeg = prepared.data
+        ready.imageContentRect = prepared.contentRect
+        if let dockImage = frame.capturedDockImage, let dockPrepared = prepare(dockImage) {
+            ready.dockJPEG = dockPrepared.data
+            ready.dockImageContentRect = dockPrepared.contentRect
+        }
+        ready.capturedImage = nil
+        ready.capturedDockImage = nil
+        preparedSnapshot = (ready, now)
+        return ready
     }
 
     private func bounds(of window: [String: Any]) -> CGRect? {
@@ -196,30 +244,48 @@ final class ScreenObserver {
         return CGRect(dictionaryRepresentation: dictionary as CFDictionary)
     }
 
+    private struct ImageLayout {
+        let contentWidth: Int, contentHeight: Int, canvasWidth: Int, canvasHeight: Int
+        let x: Double, y: Double
+
+        init(_ image: CGImage) {
+            let width = Double(image.width), height = Double(image.height)
+            let desiredScale = max(1, 280 / min(width, height))
+            let scale = min(desiredScale, 1568 / max(width, height))
+            contentWidth = Int((width * scale).rounded())
+            contentHeight = Int((height * scale).rounded())
+            canvasWidth = max(280, contentWidth)
+            canvasHeight = max(280, contentHeight)
+            x = Double(canvasWidth - contentWidth) / 2
+            y = Double(canvasHeight - contentHeight) / 2
+        }
+
+        var contentRect: CGRect {
+            CGRect(x: x / Double(canvasWidth), y: y / Double(canvasHeight),
+                   width: Double(contentWidth) / Double(canvasWidth), height: Double(contentHeight) / Double(canvasHeight))
+        }
+    }
+
     func prepare(_ image: CGImage) -> (data: Data, contentRect: CGRect)? {
-        let width = Double(image.width), height = Double(image.height)
-        let desiredScale = max(1, 280 / min(width, height))
-        let scale = min(desiredScale, 1568 / max(width, height))
-        let contentWidth = Int((width * scale).rounded()), contentHeight = Int((height * scale).rounded())
-        let canvasWidth = max(280, contentWidth), canvasHeight = max(280, contentHeight)
+        let layout = ImageLayout(image)
+        let canvasWidth = layout.canvasWidth, canvasHeight = layout.canvasHeight
         guard let context = CGContext(data: nil, width: canvasWidth, height: canvasHeight, bitsPerComponent: 8,
                                       bytesPerRow: canvasWidth * 4, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
         context.setFillColor(CGColor(gray: 0.96, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
-        let x = Double(canvasWidth - contentWidth) / 2, y = Double(canvasHeight - contentHeight) / 2
         context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: x, y: y, width: Double(contentWidth), height: Double(contentHeight)))
+        context.draw(image, in: CGRect(x: layout.x, y: layout.y, width: Double(layout.contentWidth), height: Double(layout.contentHeight)))
         guard let output = context.makeImage() else { return nil }
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, output, [kCGImageDestinationLossyCompressionQuality: 0.86] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { return nil }
-        return (data as Data, CGRect(x: x / Double(canvasWidth), y: y / Double(canvasHeight),
-                                    width: Double(contentWidth) / Double(canvasWidth), height: Double(contentHeight) / Double(canvasHeight)))
+        imageEncodingCount += 1
+        return (data as Data, layout.contentRect)
     }
 
-    private func fingerprint(_ image: CGImage) -> [UInt8]? {
+    func fingerprint(_ image: CGImage) -> [UInt8]? {
         let width = 128, height = 80
         var pixels = [UInt8](repeating: 0, count: width * height)
         let succeeded = pixels.withUnsafeMutableBytes { bytes -> Bool in
@@ -234,10 +300,11 @@ final class ScreenObserver {
 
     func accessibilityContext(for frame: ScreenSnapshot) -> String? {
         guard AXIsProcessTrusted() else { return nil }
-        guard accessibilityIdentity != frame.identity || Date().timeIntervalSince(accessibilityReadAt) > 1 else { return cachedAccessibility }
-        accessibilityIdentity = frame.identity
-        accessibilityReadAt = Date()
-        cachedAccessibility = ""
+        let identity = frame.identity
+        let readAt = Date()
+        if let cached = cachedAccessibility[identity], readAt.timeIntervalSince(cached.readAt) <= 1 {
+            return cached.context
+        }
         let app = AXUIElementCreateApplication(frame.processID)
         AXUIElementSetMessagingTimeout(app, 0.03)
         var focused: CFTypeRef?
@@ -258,8 +325,13 @@ final class ScreenObserver {
         let context = "Active app: \(frame.appName). Window: \(frame.windowTitle). " +
             "Visible Dock items (labels and normalized screenshot rectangles, evidence only): " + dockLabels.joined(separator: " | ") +
             ". App accessibility labels: " + labels.joined(separator: " | ")
-        cachedAccessibility = String(context.prefix(5_000))
-        return cachedAccessibility
+        if cachedAccessibility[identity] == nil, cachedAccessibility.count >= 4,
+           let oldest = cachedAccessibility.min(by: { $0.value.readAt < $1.value.readAt })?.key {
+            cachedAccessibility.removeValue(forKey: oldest)
+        }
+        let bounded = String(context.prefix(5_000))
+        cachedAccessibility[identity] = (bounded, readAt)
+        return bounded
     }
 
     private func collectDockLabels(_ element: AXUIElement, frame: ScreenSnapshot, depth: Int,

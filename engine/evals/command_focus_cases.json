@@ -1,0 +1,17 @@
+[
+  {"name":"download_substep","previous":"Open the shared album.","speech":"Open the shared album. Now download it.","expected":"Now download it."},
+  {"name":"other_item","previous":"Find the project folder.","speech":"Find the project folder. Open the other one.","expected":"Open the other one."},
+  {"name":"back_navigation","previous":"Open the shared album.","speech":"Open the shared album. Go back.","expected":"Go back."},
+  {"name":"meeting_substep","previous":"Join the video call.","speech":"Join the video call. Mute my microphone.","expected":"Mute my microphone."},
+  {"name":"specific_followup","previous":"Show me volunteer roles.","speech":"Show me volunteer roles. Choose Saturday.","expected":"Choose Saturday."},
+  {"name":"new_task","previous":"Adjust the event banner.","speech":"Adjust the event banner. I want to check my email.","expected":"I want to check my email."},
+  {"name":"tentative_substep","previous":"Open the shared album.","speech":"Open the shared album. Maybe print this one?","expected":"Maybe print this one?"},
+  {"name":"unpunctuated_substep","previous":"Open the shared album","speech":"Open the shared album then download it","expected":"then download it"},
+  {"name":"repeated_short_command","previous":"Open the shared album","speech":"Open the shared album download it download it","expected":"download it"},
+  {"name":"unicode_pronoun","previous":"Open Zoë’s 照片.","speech":"Open Zoë’s 照片. Save it as a PDF.","expected":"Save it as a PDF."},
+  {"name":"chatter_preserves_context","previous":"Download the schedule.","speech":"Download the schedule. It is raining outside.","expected":"Download the schedule."},
+  {"name":"generic_help_preserves_context","previous":"Download the schedule.","speech":"Download the schedule. Where do I click?","expected":"Download the schedule."},
+  {"name":"completion_clears_context","previous":"Download the schedule.","speech":"Download the schedule. That's finished, I don't need any more help.","expected":null},
+  {"name":"cancellation_clears_context","previous":"Download the schedule.","speech":"Download the schedule. Never mind, cancel that.","expected":null},
+  {"name":"chatter_without_task","previous":null,"speech":"It is raining outside.","expected":null}
+]

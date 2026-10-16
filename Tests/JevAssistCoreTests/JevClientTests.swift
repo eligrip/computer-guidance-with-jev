@@ -3,6 +3,26 @@ import XCTest
 @testable import JevAssistCore
 
 final class JevClientTests: XCTestCase {
+    func testEightConcurrentOperationsReachEngine() async throws {
+        let fixture = try EngineFixture()
+        let client = fixture.client()
+        let requests = (0..<8).map { index in Task { try await client.inferGoal(transcript: "slow:burst-\(index)", previousGoal: nil) } }
+        for (index, request) in requests.enumerated() {
+            let result = try await request.value
+            XCTAssertEqual(result, "slow:burst-\(index)")
+        }
+    }
+
+    func testGoalResponsesCannotRestoreAnOldCommand() {
+        var order = GoalResponseOrder()
+        let speech = "Open mail. Save the attachment."
+        XCTAssertTrue(order.accept(sequence: 2, selection: "Save the attachment.", requestedTranscript: speech, currentTranscript: speech))
+        XCTAssertFalse(order.accept(sequence: 1, selection: "Open mail.", requestedTranscript: "Open mail.", currentTranscript: speech))
+        XCTAssertFalse(order.accept(sequence: 3, selection: "Open mail.", requestedTranscript: "Open mail.", currentTranscript: "Open Maps."))
+        XCTAssertTrue(GoalResponseOrder.extendsSameCommand("Save the attachment", "Save the attachment to Downloads"))
+        XCTAssertFalse(GoalResponseOrder.extendsSameCommand("Open mail", "Open Maps"))
+    }
+
     func testThreeCallEvidenceAndDisagreement() async throws {
         let fixture = try EngineFixture()
         let client = fixture.client()

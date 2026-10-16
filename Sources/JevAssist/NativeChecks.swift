@@ -80,6 +80,62 @@ enum NativeChecks {
             expect(abs(before.redComponent - after.redComponent) < 0.08
                    && abs(before.blueComponent - after.blueComponent) < 0.08, "JPEG preserves image orientation at row \(y)")
         }
+        // Observation and response validation need fresh scene evidence, not
+        // two JPEG encodes. Deferred preparation must use the same image data.
+        var deferred = frame(observer.fingerprint(originalImage)!)
+        deferred.capturedImage = originalImage
+        deferred.capturedDockImage = originalImage.cropping(to: CGRect(x: 0, y: 0, width: 400, height: 100))
+        deferred.dockBounds = [CGRect(x: 100, y: 700, width: 1000, height: 100)]
+        deferred.dockSurfaceIDs = [99]
+        deferred.dockFingerprint = observer.fingerprint(deferred.capturedDockImage!)!
+        expect(deferred.jpeg.isEmpty && deferred.dockJPEG == nil, "unprepared observation has no encoded payload")
+        let ready = observer.prepareForGuidance(deferred)!
+        expect(!ready.jpeg.isEmpty && ready.dockJPEG != nil, "deferred preparation encodes scene and Dock")
+        expect(ready.identity == deferred.identity && observer.sameScene(deferred, ready), "deferred encoding preserves exact observation identity and pixels")
+        expect(ready.capturedImage == nil && ready.capturedDockImage == nil, "prepared requests release raw capture images")
+        expect(ready.jpeg == observer.prepare(originalImage)!.data, "deferred JPEG comes from retained original capture")
+        expect(ready.focusedOnDock()?.jpeg == ready.dockJPEG, "Dock view uses the prepared crop from the same capture")
+        expect(observer.prepareForGuidance(ready)?.jpeg == ready.jpeg, "already prepared snapshot reuses its JPEG")
+        expect(observer.prepareForGuidance(snapshot) == nil, "missing source image never becomes an empty request payload")
+        // Cache evidence is exact fingerprint equality, not the more tolerant
+        // meaningful-change policy. Its deadline uses an injected monotonic clock.
+        let cacheObserver = ScreenObserver()
+        deferred.dockImageContentRect = ready.dockImageContentRect
+        let firstPrepared = cacheObserver.prepareForGuidance(deferred, at: 100)!
+        let firstEncodes = cacheObserver.imageEncodingCount
+        expect(firstEncodes == 2, "first prepared scene and Dock each encode once")
+        let reused = cacheObserver.prepareForGuidance(deferred, at: 100.1)!
+        expect(cacheObserver.imageEncodingCount == firstEncodes && reused.jpeg == firstPrepared.jpeg,
+               "identical observations reuse encoded scene and Dock")
+        expect(reused.capturedImage == nil && reused.capturedDockImage == nil, "cache hits release raw capture images")
+        var tinyPixels = deferred.fingerprint
+        tinyPixels[500] = tinyPixels[500] == 255 ? 254 : tinyPixels[500] + 1
+        var tinyChange = frame(tinyPixels, content: deferred.imageContentRect)
+        tinyChange.capturedImage = deferred.capturedImage
+        tinyChange.capturedDockImage = deferred.capturedDockImage
+        tinyChange.dockBounds = deferred.dockBounds
+        tinyChange.dockSurfaceIDs = deferred.dockSurfaceIDs
+        tinyChange.dockFingerprint = deferred.dockFingerprint
+        tinyChange.dockImageContentRect = deferred.dockImageContentRect
+        expect(cacheObserver.sameScene(deferred, tinyChange), "tiny cache fixture remains the same meaningful scene")
+        _ = cacheObserver.prepareForGuidance(tinyChange, at: 100.2)
+        expect(cacheObserver.imageEncodingCount == firstEncodes + 2, "even a tolerated tiny fingerprint change invalidates JPEG reuse")
+        var dockChange = tinyChange
+        dockChange.dockFingerprint[500] = dockChange.dockFingerprint[500] == 255 ? 254 : dockChange.dockFingerprint[500] + 1
+        _ = cacheObserver.prepareForGuidance(dockChange, at: 100.3)
+        expect(cacheObserver.imageEncodingCount == firstEncodes + 4, "Dock-only fingerprint changes invalidate JPEG reuse")
+        var moved = dockChange
+        moved.surfaceBounds = [CGRect(x: 101, y: 200, width: 1000, height: 600)]
+        _ = cacheObserver.prepareForGuidance(moved, at: 100.4)
+        expect(cacheObserver.imageEncodingCount == firstEncodes + 6, "changed surface geometry invalidates JPEG reuse")
+        _ = cacheObserver.prepareForGuidance(moved, at: 100.8)
+        expect(cacheObserver.imageEncodingCount == firstEncodes + 6, "cache hit within half a second avoids encoding")
+        _ = cacheObserver.prepareForGuidance(moved, at: 100.91)
+        expect(cacheObserver.imageEncodingCount == firstEncodes + 8, "cache hits never extend the half-second refresh deadline")
+        cacheObserver.reset()
+        _ = cacheObserver.prepareForGuidance(moved, at: 101)
+        expect(cacheObserver.imageEncodingCount == firstEncodes + 10, "reset clears prepared image cache")
+        reportImageProcessingPerformance(observer)
         let languages = ["en-US", "en-GB", "fr-FR", "zh-Hant-TW", "zh-Hans-CN"]
         expect(SpeechLanguage.resolve(saved: "en_GB", preferred: ["fr-FR"], available: languages) == "en-GB", "saved speech language overrides system preference")
         expect(SpeechLanguage.resolve(saved: "unsupported", preferred: ["fr-FR"], available: languages) == "fr-FR", "unsupported saved language falls back to preferred speech language")
@@ -95,23 +151,26 @@ enum NativeChecks {
         expect(automaticSpeech.blocker(recognizerExists: false, onDeviceSupported: false, serviceAvailable: true) != nil, "unsupported speech language is reported separately")
         expect(automaticSpeech.blocker(recognizerExists: true, onDeviceSupported: false, serviceAvailable: false) != nil, "service outage is reported separately from local asset availability")
         expect(GuidancePace.restored(nil) == .fast && GuidancePace.restored("unknown") == .fast, "fast guidance is the default")
-        expect(GuidancePace.fast.maximumConcurrentRequests == 2 && GuidancePace.balanced.maximumConcurrentRequests == 1, "guidance pace bounds concurrent requests")
-        expect(GuidancePace.fast.minimumInterval == 0.1 && GuidancePace.balanced.minimumInterval == 0.25, "guidance pace uses 100ms and 250ms dispatch intervals")
+        expect(GuidancePace.fast.maximumConcurrentRequests == 6 && GuidancePace.balanced.maximumConcurrentRequests == 1, "guidance pace bounds concurrent requests")
+        expect(GuidancePace.fast.minimumInterval == 0.035 && GuidancePace.balanced.minimumInterval == 0.25, "guidance pace uses 35ms and 250ms dispatch intervals")
+        expect(GuidancePace.fast.observationInterval == 40_000_000 && GuidancePace.balanced.observationInterval == 160_000_000, "observation cadence is independent of request completion")
         let now = Date(timeIntervalSince1970: 1_000)
         let oldDispatch = now.addingTimeInterval(-1)
         for pace in GuidancePace.allCases {
             expect(!pace.canDispatch(inFlight: 0, lastDispatch: oldDispatch, retryAfter: now.addingTimeInterval(1), now: now), "retry-after blocks \(pace.rawValue) guidance")
         }
         expect(!GuidancePace.balanced.canDispatch(inFlight: 2, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "lowering pace does not dispatch while earlier requests run")
-        expect(!GuidancePace.fast.canDispatch(inFlight: 2, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance cannot exceed two requests")
-        expect(GuidancePace.fast.canDispatch(inFlight: 1, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance immediately fills a completed request slot")
-        expect(!GuidancePace.fast.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.05), retryAfter: .distantPast, now: now), "fast guidance honors its cadence")
+        expect(!GuidancePace.fast.canDispatch(inFlight: 6, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance cannot exceed six requests")
+        expect(GuidancePace.fast.canDispatch(inFlight: 5, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now), "fast guidance immediately fills a completed request slot")
+        expect(!GuidancePace.fast.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.02), retryAfter: .distantPast, now: now), "fast guidance honors its cadence")
         expect(!GuidancePace.balanced.canDispatch(inFlight: 0, lastDispatch: now.addingTimeInterval(-0.15), retryAfter: .distantPast, now: now), "balanced guidance honors its cadence")
         expect(BoxSampling.restored(nil) == .single && BoxSampling.restored("consensus") == .consensus, "three checks is a persistent opt-in experiment")
         expect(BoxSampling.consensus.sampleCount == 3, "consensus requests exactly three answers")
         for pace in GuidancePace.allCases {
             expect(pace.canDispatch(inFlight: 0, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now, sampling: .consensus), "consensus starts a fresh three-call group")
-            expect(!pace.canDispatch(inFlight: 1, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now, sampling: .consensus), "consensus never overlaps two three-call groups")
+            let groupLimit = pace == .fast ? 2 : 1
+            expect(!pace.canDispatch(inFlight: groupLimit, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now, sampling: .consensus), "consensus honors its bounded group count")
+            expect(pace.canDispatch(inFlight: groupLimit - 1, lastDispatch: oldDispatch, retryAfter: .distantPast, now: now, sampling: .consensus), "consensus uses available group capacity")
             expect(!pace.canDispatch(inFlight: 0, lastDispatch: oldDispatch, retryAfter: now.addingTimeInterval(1), now: now, sampling: .consensus), "consensus honors retry-after")
         }
         SetupChecks.run { expect($0, $1) }
@@ -119,5 +178,35 @@ enum NativeChecks {
         checks += DockCaptureChecks.run()
         checks += SessionRecorderChecks.run()
         print("Native checks passed: \(checks)")
+    }
+
+    /// Informational measurements only: no flaky machine-speed assertion. The
+    /// fixture represents a Retina window plus Dock; real screen acquisition
+    /// and provider latency are deliberately excluded from these numbers.
+    private static func reportImageProcessingPerformance(_ observer: ScreenObserver) {
+        let width = 3024, height = 1964
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        context.setFillColor(CGColor(gray: 0.96, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        for row in 0..<35 {
+            for column in 0..<8 {
+                context.setFillColor(CGColor(gray: Double((row * 7 + column * 11) % 60) / 100 + 0.1, alpha: 1))
+                context.fill(CGRect(x: 30 + column * 370, y: 20 + row * 54, width: 240 + row % 80, height: 12))
+            }
+        }
+        let image = context.makeImage()!
+        let dock = image.cropping(to: CGRect(x: 300, y: 1800, width: 2400, height: 140))!
+        func fingerprintPair() { _ = observer.fingerprint(image); _ = observer.fingerprint(dock) }
+        func encodedPair() { fingerprintPair(); _ = observer.prepare(image); _ = observer.prepare(dock) }
+        fingerprintPair(); encodedPair()
+        func millisecondsPerIteration(_ operation: () -> Void) -> Double {
+            let start = ProcessInfo.processInfo.systemUptime
+            for _ in 0..<12 { autoreleasepool { operation() } }
+            return (ProcessInfo.processInfo.systemUptime - start) * 1000 / 12
+        }
+        let validation = millisecondsPerIteration(fingerprintPair)
+        let encoded = millisecondsPerIteration(encodedPair)
+        print(String(format: "Synthetic image processing, 3024×1964 + Dock: fingerprints %.2f ms; fingerprints + JPEGs %.2f ms (screen acquisition excluded)", validation, encoded))
     }
 }
