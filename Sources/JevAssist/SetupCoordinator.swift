@@ -312,7 +312,7 @@ final class SetupCoordinator: ObservableObject {
         UserDefaults.standard.set(true, forKey: "setupInProgress")
         requestTask = Task { [weak self] in
             guard let self else { return }
-            do { try await AppRelauncher.restart() }
+            do { try await AppRelauncher.restart(showSetup: true) }
             catch {
                 if let previousAttempt { UserDefaults.standard.set(previousAttempt, forKey: "setupRestartedBuild") }
                 else { UserDefaults.standard.removeObject(forKey: "setupRestartedBuild") }

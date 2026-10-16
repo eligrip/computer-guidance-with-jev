@@ -30,6 +30,8 @@ jobs:
         run: node scripts/test-recording-review.cjs
       - name: Interrupted local signing cleanup
         run: python3 Tests/local-signing.test.py -v
+      - name: Local restart and update recovery
+        run: ./scripts/restart.sh --self-test
       - name: Build signed app and bridge
         run: ./scripts/build.sh
       - name: Native coordinate and screen tests

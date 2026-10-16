@@ -127,8 +127,10 @@ final class SessionRecorder {
         _ = enqueue(entry)
     }
 
-    /// Deterministic synthetic checks only. Guidance never waits for the writer.
-    func flushForTesting() { queue.sync {} }
+    /// Only app exit waits for queued evidence; live guidance remains asynchronous.
+    func finishPendingWritesForExit() { queue.sync {} }
+
+    func flushForTesting() { finishPendingWritesForExit() }
 
     private func event(_ kind: String, reason: String? = nil) -> RecordingEvent {
         RecordingEvent(kind: kind, timestampMS: Date().timeIntervalSince1970 * 1000,

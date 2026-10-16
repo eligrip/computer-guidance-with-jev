@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var setup = SetupCoordinator(languageID: session.speechLanguageID, mode: session.speechMode)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AppRelauncher.prepareForExit = { [weak self] in self?.session.stop() }
+        AppRelauncher.prepareForExit = { [weak self] in self?.session.prepareForAppExit() }
         NSApp.setActivationPolicy(.accessory)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "Jev Assist")
@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func applicationWillTerminate(_ notification: Notification) { session.stop() }
+    func applicationWillTerminate(_ notification: Notification) { session.prepareForAppExit() }
 }
 
 private struct SessionView: View {
@@ -84,6 +84,8 @@ private struct SessionView: View {
     @State private var showingSetup = UserDefaults.standard.bool(forKey: "setupInProgress")
     @State private var showingHighlightStyles = false
     @State private var showingConversationHistory = false
+    @State private var isRestarting = false
+    @State private var restartError: String?
 
     var body: some View {
         Group {
@@ -101,6 +103,9 @@ private struct SessionView: View {
         }
         .sheet(isPresented: $showingSpeechSettings) { SpeechSettingsView(session: session) }
         .sheet(isPresented: $showingHighlightStyles) { HighlightStylePickerView(session: session) }
+        .alert("Couldn’t restart Jev Assist", isPresented: Binding(get: { restartError != nil }, set: { if !$0 { restartError = nil } })) {
+            Button("OK") { restartError = nil }
+        } message: { Text(restartError ?? "Please try again.") }
         .onChange(of: showingSetup) {
             UserDefaults.standard.set($0, forKey: "setupInProgress")
             onSetupVisibilityChanged($0)
@@ -206,6 +211,10 @@ private struct SessionView: View {
             HStack {
                 Button("Your notes") { session.openNotes() }
                 Button("Highlight style") { showingHighlightStyles = true }
+                Button(isRestarting ? "Restarting…" : "Restart", action: restartApp)
+                    .keyboardShortcut("r", modifiers: .command)
+                    .disabled(isRestarting)
+                    .help("Restart Jev Assist")
                 Spacer()
                 Button { showingSettings.toggle() } label: { Image(systemName: "gearshape") }
                     .accessibilityLabel("Settings")
@@ -265,6 +274,18 @@ private struct SessionView: View {
         guard !text.isEmpty else { return }
         session.addTypedText(text)
         draft = ""
+    }
+
+    private func restartApp() {
+        guard !isRestarting else { return }
+        isRestarting = true
+        Task { @MainActor in
+            do { try await AppRelauncher.restart() }
+            catch {
+                restartError = error.localizedDescription
+                isRestarting = false
+            }
+        }
     }
 
     private func refreshSetup() {

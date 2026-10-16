@@ -27,6 +27,8 @@ The setup helper reads the API key without echoing it and writes an ignored `.en
 
 You can also type a thought into the panel. The menu-bar icon opens session controls; **Stop help session** ends capture and transcription and removes the box.
 
+Use **Restart** in the main panel, or **⌘R**, to restart the installed app. To apply a prepared update as well, double-click **Restart Jev Assist.command** in this checkout, or run `./scripts/restart.sh`. The launcher checks the staged app’s signature and signing identity, closes only this checkout’s running app, and keeps a backup for recovery. An ordinary restart does not compile anything.
+
 **Highlight style** offers three native vector previews: Soft outline (default), Corner guides, and Underline. A style change redraws the current target without moving it or resetting the highlight latch.
 
 **Hearing you** shows the current request and follow-up speech, starting at the exact passage Jev selected. When you move to another task, earlier words move into a collapsed **Earlier conversation** section. Before Jev has selected a request, the panel shows a recent excerpt. The app still retains up to 24,000 characters of conversation; guidance receives the current request and earlier conversation in separate fields so old instructions do not compete with a new task. **Keeping in mind** follows the latest task expressed in your own words, including a change of task without an explicit cancellation.
@@ -107,6 +109,7 @@ cargo test --manifest-path engine/Cargo.toml --locked
 bash scripts/test-core.sh
 node --test Tests/browser-extension.test.mjs
 node scripts/test-recording-review.cjs
+./scripts/restart.sh --self-test
 ./scripts/build.sh
 dist/JevAssist.app/Contents/MacOS/JevAssist --self-test
 JEV_ASSIST_BRIDGE_TEST_BINARY="$PWD/dist/JevAssist.app/Contents/MacOS/JevAssistBridge" python3 Tests/browser-bridge.test.py -v
@@ -114,7 +117,7 @@ JEV_ASSIST_BRIDGE_TEST_BINARY="$PWD/dist/JevAssist.app/Contents/MacOS/JevAssistB
 
 The tests cover highlight persistence, stale responses, session boundaries, exact goal selection, API payloads, malformed output, Rust process reuse, cancellation, and restart. Native checks cover image preparation and screen coordinates. Browser bridge tests use temporary directories and synthetic messages. With full Xcode installed, `swift test --disable-sandbox` also runs the XCTest suite; Command Line Tools alone may lack XCTest. GitHub Actions runs the full suite on macOS.
 
-To prepare an update while an existing demo stays running, use `./scripts/build.sh --stage`. This writes a separately signed bundle to `.build/next/JevAssist.app` and leaves `dist/JevAssist.app` untouched. It does not launch or install the update. After the demo is finished, stop and quit the existing app, then build/run normally to apply the changes at the established bundle path.
+To prepare an update while an existing demo stays running, use `./scripts/build.sh --stage`. This writes a separately signed bundle to `.build/next/JevAssist.app` and leaves `dist/JevAssist.app` untouched. When ready, double-click **Restart Jev Assist.command** or run `./scripts/restart.sh` to install the verified update and reopen it at the established bundle path. `./scripts/restart.sh --dry-run` checks what would happen without stopping, copying, building, or opening an app. If no installed or staged app exists, the launcher builds a staged app once. Previous versions are retained under the ignored `.build/restart-backups` directory; an unsuccessful update restores and reopens the previous app when possible.
 
 To verify an installed English (US) speech model on your Mac, run `swift scripts/check-local-speech.swift`. It synthesizes a fixed sentence into a temporary file and transcribes it with on-device recognition required. It never opens the microphone, sends a Jev request, or opts into online transcription. Run it outside restrictive process sandboxes so it can reach Apple’s speech service; it is intentionally separate from CI because local speech assets must already be installed.
 

@@ -151,6 +151,11 @@ final class SessionController: ObservableObject {
         onRunningChanged?(false)
     }
 
+    func prepareForAppExit() {
+        stop()
+        recorder.finishPendingWritesForExit()
+    }
+
     func addTypedText(_ text: String) {
         if !isRunning {
             if pendingTypedText.isEmpty { conversation.reset() }
