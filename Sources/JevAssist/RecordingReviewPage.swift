@@ -108,7 +108,7 @@ enum RecordingReviewPage {
         if(sample) {
           const probability=value=>finite(value)?(value*100).toFixed(1)+'%':'unavailable';
           const bounds=validBox(sample.box)?'L '+sample.box.left.toFixed(3)+' · T '+sample.box.top.toFixed(3)+' · R '+sample.box.right.toFixed(3)+' · B '+sample.box.bottom.toFixed(3):(sample.box?'Invalid box':'No box');
-          row.textContent='Sample '+(i+1)+' · '+(selected.has(i)?'selected':'excluded')+'\nConfidence '+probability(sample.confidence)+' · presence '+probability(sample.presence)+'\n'+bounds;
+          row.textContent='Sample '+(i+1)+' · '+(selected.has(i)?'selected':'excluded')+'\nConfidence '+probability(sample.confidence)+' · presence '+probability(sample.presence)+(finite(sample.activity)?' · active request '+probability(sample.activity):'')+'\n'+bounds;
         } else { row.textContent=''; }
       }
     }
@@ -126,13 +126,14 @@ enum RecordingReviewPage {
       $('scrub').value=index;
       const ms=finite(e.elapsedMS)?e.elapsedMS:0;
       $('reason').textContent=(ms/1000).toFixed(1)+'s · '+words(e.kind)+(e.disposition?' · '+words(e.disposition):'')+(e.reason?'\n'+words(e.reason):'');
-      $('goal').textContent=step.context?.goal || 'No selected goal';
+      $('goal').textContent=step.context?.task || step.context?.goal || 'No selected task';
       $('transcript').textContent=step.context?.transcript || 'No speech recorded yet';
       const detail=[];
       if (f?.appName) detail.push(f.appName); if (f?.windowTitle) detail.push(f.windowTitle);
       if (finite(e.latencyMS)) detail.push(Math.round(e.latencyMS)+' ms');
       if (finite(e.confidence)) detail.push('Confidence '+(e.confidence*100).toFixed(0)+'%');
       if (finite(e.presence)) detail.push('Presence '+(e.presence*100).toFixed(0)+'%');
+      if (finite(e.activity)) detail.push('Active request '+(e.activity*100).toFixed(0)+'%');
       $('detail').textContent=detail.join(' · ');
       $('previous').disabled=index===0; $('next').disabled=index>=timeline.length-1;
     }
@@ -152,7 +153,7 @@ enum RecordingReviewPage {
         if (!line.trim()) continue;
         let e; try { e=JSON.parse(line); } catch { bad++; continue; }
         if (!e || e.schemaVersion!==1 || typeof e.kind!=='string') { bad++; continue; }
-        if (e.kind==='context') { context={transcript:typeof e.transcript==='string'?e.transcript:'',goal:typeof e.goal==='string'?e.goal:null}; continue; }
+        if (e.kind==='context') { context={transcript:typeof e.transcript==='string'?e.transcript:'',goal:typeof e.goal==='string'?e.goal:null,task:typeof e.task==='string'?e.task:null}; continue; }
         if (e.kind==='frame' && typeof e.frameID==='string') {
           lastFrame={event:e,context}; frames.set(e.frameID,lastFrame);
           timeline.push({event:e,frame:e,context,held});

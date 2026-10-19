@@ -57,7 +57,7 @@ enum NativeChecks {
             let prepared = observer.prepare(context.makeImage()!)!
             let source = CGImageSourceCreateWithData(prepared.data as CFData, nil)!
             let image = CGImageSourceCreateImageAtIndex(source, 0, nil)!
-            expect((256...1568).contains(image.width) && (256...1568).contains(image.height)
+            expect((280...1568).contains(image.width) && (280...1568).contains(image.height)
                    && image.width * image.height >= 78_400, "JPEG size limits for \(width)×\(height)")
         }
         // An asymmetric fixture catches vertical flips introduced by image

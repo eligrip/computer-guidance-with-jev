@@ -21,6 +21,7 @@ pub struct Request {
 pub enum Operation {
     Guidance(GuidanceInput),
     Goal(GoalInput),
+    Intent(IntentInput),
 }
 
 #[derive(Deserialize)]
@@ -28,6 +29,7 @@ pub struct GuidanceInput {
     pub transcript: String,
     pub current_utterance: Option<String>,
     pub goal: Option<String>,
+    pub task_anchor: Option<String>,
     pub notes: String,
     pub browser_context: Option<String>,
     pub accessibility_context: Option<String>,
@@ -45,6 +47,14 @@ pub struct GoalInput {
     pub transcript: String,
     pub current_utterance: Option<String>,
     pub previous_goal: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct IntentInput {
+    pub transcript: String,
+    pub current_utterance: Option<String>,
+    pub previous_goal: Option<String>,
+    pub previous_task: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
@@ -74,6 +84,7 @@ pub struct GuidanceResult {
     pub r#box: Option<NormalizedBox>,
     pub confidence: f64,
     pub presence: f64,
+    pub activity: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ensemble: Option<EnsembleDiagnostics>,
 }
@@ -83,6 +94,7 @@ pub struct GuidanceSample {
     pub r#box: Option<NormalizedBox>,
     pub confidence: f64,
     pub presence: f64,
+    pub activity: f64,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -105,7 +117,13 @@ pub enum EnsembleMethod {
 #[serde(untagged)]
 pub enum ResultValue {
     Guidance(GuidanceResult),
-    Goal { goal: Option<String> },
+    Goal {
+        goal: Option<String>,
+    },
+    Intent {
+        goal: Option<String>,
+        task: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, PartialEq)]

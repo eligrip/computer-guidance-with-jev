@@ -16,14 +16,17 @@ public struct BoxSample: Codable, Equatable, Sendable {
     public let box: NormalizedBox?
     public let confidence: Double
     public let presence: Double
+    public let activity: Double?
 
-    public init(box: NormalizedBox?, confidence: Double, presence: Double) {
+    public init(box: NormalizedBox?, confidence: Double, presence: Double, activity: Double? = nil) {
         self.box = box; self.confidence = confidence; self.presence = presence
+        self.activity = activity
     }
 
     public var isValid: Bool {
         box?.isValid != false && confidence.isFinite && (0...1).contains(confidence)
             && presence.isFinite && (0...1).contains(presence)
+            && activity.map({ $0.isFinite && (0...1).contains($0) }) != false
     }
 }
 

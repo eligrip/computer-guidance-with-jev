@@ -7,6 +7,7 @@ final class SessionController: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var transcript = ""
     @Published private(set) var goal: String?
+    @Published private(set) var taskAnchor: String?
     @Published private(set) var status = "Ready when you are"
     @Published private(set) var speechStatus = "Voice starts with your help session"
     @Published private(set) var hasAPIKey = false
@@ -37,7 +38,7 @@ final class SessionController: ObservableObject {
     private var guidancePump: Task<Void, Never>?
     private var goalTasks: [UInt64: Task<Void, Never>] = [:]
     private var goalInputs: [UInt64: String] = [:]
-    private var goalOrder = GoalResponseOrder()
+    private var intentOrder = IntentResponseOrder()
     private var goalSequence: UInt64 = 0
     private var speechTask: Task<Void, Never>?
     private var previousApp: NSRunningApplication?
@@ -87,7 +88,7 @@ final class SessionController: ObservableObject {
             self.currentUtterance = SpeechTranscriptUpdate(text: combined, currentUtterance: update.currentUtterance).currentUtterance
                 ?? SpeechTranscriptUpdate(text: combined, currentUtterance: self.currentUtterance).currentUtterance
             self.updateTranscript()
-            self.recorder.recordContext(transcript: self.transcript, goal: self.goal, currentUtterance: self.currentUtterance)
+            self.recorder.recordContext(transcript: self.transcript, goal: self.goal, currentUtterance: self.currentUtterance, task: self.taskAnchor)
             self.scheduleGuidancePump()
         }
         speech.onRecognitionTelemetry = { [weak self] telemetry in self?.recorder.recordSpeech(telemetry) }
@@ -111,6 +112,7 @@ final class SessionController: ObservableObject {
         }
         sessionID = UUID()
         goal = nil
+        taskAnchor = nil
         screens.reset()
         latch.beginSession()
         isRunning = true
@@ -123,7 +125,7 @@ final class SessionController: ObservableObject {
         lastGoalTranscript = ""
         lastGoalUtterance = nil
         lastGoalCheck = .distantPast
-        goalOrder = GoalResponseOrder()
+        intentOrder = IntentResponseOrder()
         goalSequence = 0
         latestFrame = nil
         latestFrameStable = false
@@ -138,7 +140,7 @@ final class SessionController: ObservableObject {
         currentUtterance = pendingTypedText.isEmpty ? nil : pendingTypedText
         pendingTypedText = ""
         updateTranscript()
-        recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance)
+        recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance, task: taskAnchor)
         status = "Listening · talk through what you want"
         onRunningChanged?(true)
         let startedSession = sessionID
@@ -198,8 +200,9 @@ final class SessionController: ObservableObject {
         // Corrected recognition must not leave an anchor whose words vanished.
         // This changes request context only; the visible highlight stays latched.
         if let goal, !updated.contains(goal) { self.goal = nil }
+        if let taskAnchor, !updated.contains(taskAnchor) { self.taskAnchor = nil }
         contextRevision &+= 1
-        recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance)
+        recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance, task: taskAnchor)
         // New or revised speech never releases an accepted highlight.
         scheduleGuidancePump()
     }
@@ -296,12 +299,12 @@ final class SessionController: ObservableObject {
         let input = GuidanceInput(transcript: transcript, goal: goal, notes: LocalStorage.readNotes(),
                                   browserContext: LocalStorage.browserContext(for: frame.bundleID),
                                   accessibilityContext: scope + (screens.accessibilityContext(for: requestFrame) ?? ""),
-                                  imageJPEG: requestFrame.jpeg, sampling: requestSampling, currentUtterance: currentUtterance)
+                                  imageJPEG: requestFrame.jpeg, sampling: requestSampling, currentUtterance: currentUtterance, taskAnchor: taskAnchor)
         let requestConversation = conversation
         let requestSession = sessionID
         let requestID = UUID()
         let frameID = recorder.recordFrame(requestFrame, generation: ticket.screenGeneration)
-        recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance)
+        recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance, task: taskAnchor)
         lastDispatch = Date()
         lastDispatchedSampling = requestSampling
         let started = Date()
@@ -322,6 +325,9 @@ final class SessionController: ObservableObject {
                     return
                 }
                 guard GoalResponseOrder.guidanceIsCurrent(requestedGoal: input.goal, currentGoal: self.goal,
+                    conversation: requestConversation, currentConversation: self.conversation,
+                    requestedUtterance: input.currentUtterance, currentUtterance: self.currentUtterance),
+                      GoalResponseOrder.guidanceIsCurrent(requestedGoal: input.taskAnchor, currentGoal: self.taskAnchor,
                     conversation: requestConversation, currentConversation: self.conversation,
                     requestedUtterance: input.currentUtterance, currentUtterance: self.currentUtterance) else {
                     self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
@@ -364,6 +370,7 @@ final class SessionController: ObservableObject {
                                                   confidence: result.confidence, presence: result.presence)
                 let accepted = self.latch.apply(mappedResult, for: ticket)
                 if accepted, let box = result.box, let rect {
+                    self.screens.trackControl(at: rect, in: frame)
                     self.overlay.show(coreGraphicsRect: rect)
                     self.recorder.recordDecision(requestID: requestID.uuidString, frameID: frameID, result: result,
                         latencyMS: latency, disposition: "displayed", reason: "accepted", targetRect: rect)
@@ -403,7 +410,7 @@ final class SessionController: ObservableObject {
               transcript != lastGoalTranscript || currentUtterance != lastGoalUtterance || now.timeIntervalSince(lastGoalCheck) >= guidancePace.unchangedSpeechGoalInterval,
               !transcript.isEmpty, !goalInputs.values.contains(transcript), let client else { return }
         let text = transcript
-        let previous = goal
+        let previous = IntentSelection(goal: goal, task: taskAnchor)
         let utterance = currentUtterance
         let requestConversation = conversation
         let requestSession = sessionID
@@ -418,7 +425,7 @@ final class SessionController: ObservableObject {
         goalInputs[sequence] = text
         goalTasks[sequence] = Task { [weak self] in
             do {
-                let inferred = try await client.inferGoal(transcript: text, previousGoal: previous, currentUtterance: utterance)
+                let inferred = try await client.inferIntent(transcript: text, previous: previous, currentUtterance: utterance)
                 guard let self, !Task.isCancelled, self.isRunning, self.sessionID == requestSession else { return }
                 self.goalTasks.removeValue(forKey: sequence)
                 self.goalInputs.removeValue(forKey: sequence)
@@ -429,29 +436,21 @@ final class SessionController: ObservableObject {
                     self.lastGoalTranscript = ""
                     self.nextGoalAt = .distantPast
                 }
-                // A parallel check may say "keep previous" using an anchor
-                // another completed check already replaced. Rejudge it with
-                // current context instead of restoring that old command.
-                if GoalResponseOrder.echoesStaleAnchor(selection: inferred, requestedPrevious: previous, currentGoal: self.goal) {
-                    self.recorder.recordGoal(sequence: sequence, latencyMS: Date().timeIntervalSince(started) * 1000,
-                                             disposition: "suppressed", reason: "stale_anchor_echo")
-                    self.lastGoalTranscript = ""
-                    self.nextGoalAt = .distantPast
-                    return
-                }
-                guard self.goalOrder.accept(sequence: sequence, selection: inferred,
-                    requestedTranscript: text, currentTranscript: self.transcript,
-                    requestedConversation: requestConversation, currentConversation: self.conversation) else {
+                guard self.intentOrder.accept(sequence: sequence, selection: inferred,
+                    requestedPrevious: previous, current: IntentSelection(goal: self.goal, task: self.taskAnchor),
+                    requestedConversation: requestConversation, currentConversation: self.conversation,
+                    requestedUtterance: utterance, currentUtterance: self.currentUtterance) else {
                     self.recorder.recordGoal(sequence: sequence, latencyMS: Date().timeIntervalSince(started) * 1000,
                                              disposition: "suppressed", reason: "stale_source_or_response")
                     return
                 }
                 self.recorder.recordGoal(sequence: sequence, latencyMS: Date().timeIntervalSince(started) * 1000,
-                                         disposition: inferred == self.goal ? "unchanged" : "updated")
-                if inferred != self.goal {
-                    self.goal = inferred
+                                         disposition: inferred == IntentSelection(goal: self.goal, task: self.taskAnchor) ? "unchanged" : "updated")
+                if inferred != IntentSelection(goal: self.goal, task: self.taskAnchor) {
+                    self.goal = inferred.goal
+                    self.taskAnchor = inferred.task
                     self.contextRevision &+= 1
-                    self.recorder.recordContext(transcript: self.transcript, goal: inferred, currentUtterance: self.currentUtterance)
+                    self.recorder.recordContext(transcript: self.transcript, goal: self.goal, currentUtterance: self.currentUtterance, task: self.taskAnchor)
                 }
             } catch {
                 guard let self, !Task.isCancelled, self.isRunning, self.sessionID == requestSession else { return }
@@ -474,7 +473,7 @@ final class SessionController: ObservableObject {
         let now = Date()
         completions.append(contentsOf: repeatElement(now, count: completedCalls))
         completions.removeAll { now.timeIntervalSince($0) > 5 }
-        metrics = "\(requestCount) target · \(goalRequestCount) goal · \(String(format: "%.1f", Double(completions.count) / 5))/s · \(Int(latencyMS))ms"
+        metrics = "\(requestCount) target · \(goalRequestCount) intent · \(String(format: "%.1f", Double(completions.count) / 5))/s · \(Int(latencyMS))ms"
     }
 
     func saveAPIKey(_ key: String) {
@@ -508,7 +507,7 @@ final class SessionController: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "recordSessions")
         if enabled && isRunning {
             startRecording()
-            recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance)
+            recorder.recordContext(transcript: transcript, goal: goal, currentUtterance: currentUtterance, task: taskAnchor)
         } else if !enabled { recorder.stop(reason: "recording_disabled") }
     }
 

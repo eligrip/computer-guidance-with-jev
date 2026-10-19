@@ -153,6 +153,15 @@ enum CoreRegressionHarness {
 
         let fixture = try EngineFixture()
         let client = fixture.client()
+        let intentPrevious = IntentSelection(goal: "Select cookies", task: "Clear cookies")
+        let selectedIntent = try await client.inferIntent(transcript: "Clear cookies. Select cookies. What next?",
+            previous: intentPrevious, currentUtterance: "What next?")
+        try expect(selectedIntent == intentPrevious, "Task and step did not survive the pipe independently")
+        do {
+            _ = try await client.inferIntent(transcript: "invalid-intent Clear cookies. Select cookies. What next?",
+                previous: intentPrevious, currentUtterance: "What next?")
+            throw Failure(message: "Invented task crossed the pipe")
+        } catch is JevError { checks += 1 }
         let decoded = try await client.guidance(EngineFixture.input("normal"))
         try expect(decoded.box == a, "Rust adapter lost documented box")
         let missing = try await client.guidance(EngineFixture.input("absent"))

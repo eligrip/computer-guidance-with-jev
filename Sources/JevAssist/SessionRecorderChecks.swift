@@ -53,6 +53,8 @@ enum SessionRecorderChecks {
             recorder.recordHighlight(reason: "accepted", frameID: first, box: box, targetRect: frame.screenRect(for: box))
             recorder.recordContext(transcript: "Find the synthetic attachment", goal: "synthetic attachment")
             recorder.recordContext(transcript: "Find the synthetic attachment", goal: nil)
+            recorder.recordContext(transcript: "Find the synthetic attachment", goal: nil, task: "Find the synthetic attachment")
+            recorder.recordContext(transcript: "Find the synthetic attachment", goal: nil, task: "Find the synthetic attachment")
             recorder.recordContext(transcript: String(repeating: "x", count: 30_000), goal: nil)
             recorder.recordSetting(name: "guidance_pace", value: "fast")
             recorder.recordSetting(name: "box_sampling", value: "consensus")
@@ -89,7 +91,9 @@ enum SessionRecorderChecks {
             let goals = events.filter { $0["kind"] as? String == "goal" }
             expect(goals.count == 2 && goals.first?["requestID"] as? String == goals.last?["requestID"] as? String
                 && goals.last?["latencyMS"] as? Double == 145, "goal diagnostics link dispatch and measured reply latency")
-            expect(contexts.count == 4 && contexts[2]["goal"] == nil, "context dedup retains goal selection and clearing")
+            expect(contexts.count == 5 && contexts[2]["goal"] == nil, "context dedup retains goal selection and clearing")
+            expect(contexts[3]["task"] as? String == "Find the synthetic attachment" && contexts[3]["goal"] == nil,
+                   "task-only context updates are recorded and deduplicated independently")
             expect((contexts.last?["transcript"] as? String)?.count == TranscriptContext.maximumCharacters, "recordings retain the complete bounded conversation context")
             let decision = events.first { $0["requestID"] as? String == "synthetic-request" }!
             expect(decision["frameID"] as? String == first && decision["latencyMS"] as? Double == 145, "decisions link exact frames and latency")

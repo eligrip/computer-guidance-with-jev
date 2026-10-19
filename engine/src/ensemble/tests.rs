@@ -15,6 +15,7 @@ fn rectangle(left: f64, right: f64) -> NormalizedBox {
 
 fn sample(box_value: Option<NormalizedBox>, confidence: f64, presence: f64) -> GuidanceSample {
     GuidanceSample {
+        activity: 1.0,
         r#box: box_value,
         confidence,
         presence,

@@ -1,5 +1,7 @@
 # Jev-Assist
 
+For session history, the last shipped state, and unfinished work, read [HANDOFF.md](HANDOFF.md) (updated October 19, 2026). Its proposed changes are not implemented unless the current source confirms otherwise.
+
 ## Product requirements
 
 Build a native Mac assistant that listens during a user-started help session and continuously highlights the next helpful screen target. The user talks naturally; do not require an explicit goal, predefined workflow, or a generative planner. Jev handles decisions and Box outputs. The user clicks, types, and scrolls themselves. Do not generate spoken instructions or automatically operate other apps.

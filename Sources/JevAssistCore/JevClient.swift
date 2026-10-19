@@ -78,23 +78,25 @@ public struct JevClient: Sendable {
         let response = try await send(operation: "guidance", input: [
             "transcript": input.transcript, "goal": input.goal as Any? ?? NSNull(), "notes": input.notes,
             "current_utterance": input.currentUtterance as Any? ?? NSNull(),
+            "task_anchor": input.taskAnchor as Any? ?? NSNull(),
             "browser_context": input.browserContext as Any? ?? NSNull(),
             "accessibility_context": input.accessibilityContext as Any? ?? NSNull(),
             "image_jpeg_base64": input.imageJPEG.base64EncodedString(), "sample_count": input.sampling.sampleCount
         ])
         struct Result: Decodable {
-            let box: NormalizedBox?; let confidence: Double; let presence: Double; let ensemble: BoxEnsemble?
+            let box: NormalizedBox?; let confidence: Double; let presence: Double; let ensemble: BoxEnsemble?; let activity: Double?
         }
         let result: Result = try decodeResult(response)
         guard result.box?.isValid != false, result.confidence.isFinite, (0...1).contains(result.confidence),
-              result.presence.isFinite, (0...1).contains(result.presence) else {
+              result.presence.isFinite, (0...1).contains(result.presence),
+              result.activity.map({ $0.isFinite && (0...1).contains($0) }) != false else {
             throw JevError.invalidResponse("Engine returned invalid box coordinates or probabilities.")
         }
         guard (input.sampling == .single && result.ensemble == nil)
                 || (input.sampling == .consensus && result.ensemble?.isValid(for: result.box) == true) else {
             throw JevError.invalidResponse("Engine returned inconsistent box comparison evidence.")
         }
-        return GuidanceResult(box: result.box, confidence: result.confidence, presence: result.presence, ensemble: result.ensemble)
+        return GuidanceResult(box: result.box, confidence: result.confidence, presence: result.presence, ensemble: result.ensemble, activity: result.activity)
     }
 
     public func inferGoal(transcript: String, previousGoal: String?, currentUtterance: String? = nil) async throws -> String? {
@@ -105,6 +107,19 @@ public struct JevClient: Sendable {
         struct Result: Decodable { let goal: String? }
         let result: Result = try decodeResult(response)
         return result.goal
+    }
+
+    public func inferIntent(transcript: String, previous: IntentSelection, currentUtterance: String? = nil) async throws -> IntentSelection {
+        let response = try await send(operation: "intent", input: [
+            "transcript": transcript, "previous_goal": previous.goal as Any? ?? NSNull(),
+            "previous_task": previous.task as Any? ?? NSNull(),
+            "current_utterance": currentUtterance as Any? ?? NSNull()
+        ])
+        let result: IntentSelection = try decodeResult(response)
+        guard [result.goal, result.task].allSatisfy({ $0.map { !$0.isEmpty && transcript.contains($0) } ?? true }) else {
+            throw JevError.invalidResponse("Intent selection was not copied from user speech.")
+        }
+        return result
     }
 
     private func send(operation: String, input: [String: Any]) async throws -> Data {

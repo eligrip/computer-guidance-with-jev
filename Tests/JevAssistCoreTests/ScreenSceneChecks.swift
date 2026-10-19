@@ -66,6 +66,24 @@ enum ScreenSceneChecks {
         try expect(!ScreenSceneDetector.sameScene(sample(blank, dock: blank), sample(blank, dock: rearrangedDock)),
                    "Substantial Dock layout/content change rejects an old result")
 
+        // A tiny checkbox tick is intentionally below the visual threshold.
+        let tick = sample(painting(blank, x: 51..<53, y: 31..<33, color: 0))
+        try expect(ScreenSceneDetector.sameScene(original, tick), "Fixture must exercise a change missed by the thumbnail")
+        var control = ControlStateChangeDetector(baseline: "AXCheckBox:value=0;enabled=1")
+        try expect(!control.observe("AXCheckBox:value=0;enabled=1", at: 0).changed, "Unchanged control cleared a box")
+        try expect(!control.observe(nil, at: 1).changed, "Missing AX evidence cleared a box")
+        try expect(!control.observe("AXCheckBox:value=1;enabled=1", at: 2).stable, "Checked state did not start settling")
+        for index in 1...11 {
+            try expect(!control.observe("AXCheckBox:value=1;enabled=1", at: 2 + Double(index)/100).changed, "Control state settled too soon")
+        }
+        try expect(control.observe("AXCheckBox:value=1;enabled=1", at: 2.121).changed, "Checked state change never advanced")
+        var transient = ControlStateChangeDetector(baseline: "unchecked")
+        _ = transient.observe("checked", at: 0)
+        try expect(!transient.observe("unchecked", at: 0.13).changed, "Reverted control state released a held box")
+        _ = transient.observe("checked", at: 1)
+        _ = transient.observe(nil, at: 1.1)
+        try expect(!transient.observe("checked", at: 1.13).changed, "Missing reads incorrectly counted as settled state")
+
         detector.reset()
         var latch = HighlightLatch()
         latch.beginSession()
@@ -78,6 +96,12 @@ enum ScreenSceneChecks {
             if result.changed { latch.screenDidChange() }
         }
         try expect(latch.box == box, "Repeated cursor blinking never removes the latched box")
+        var checkedControl = ControlStateChangeDetector(baseline: "unchecked")
+        _ = checkedControl.observe("checked", at: 15.1)
+        if checkedControl.observe("checked", at: 15.221).changed { latch.screenDidChange() }
+        try expect(latch.box == nil, "Settled checkbox state did not release its old highlight")
+        let nextStep = latch.makeRequest()!
+        _ = latch.apply(GuidanceResult(box: box, confidence: 0.9, presence: 0.9), for: nextStep)
         let oldResult = latch.makeRequest()!
         if detector.observe(newPage, at: 16).changed { latch.screenDidChange() }
         try expect(latch.box == nil, "Real navigation releases the held box promptly")

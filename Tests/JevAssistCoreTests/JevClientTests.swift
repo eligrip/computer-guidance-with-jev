@@ -3,6 +3,19 @@ import XCTest
 @testable import JevAssistCore
 
 final class JevClientTests: XCTestCase {
+    func testPairedIntentCopiesSourceAcrossPipe() async throws {
+        let fixture = try EngineFixture()
+        let previous = IntentSelection(goal: "Select cookies", task: "Clear cookies")
+        let result = try await fixture.client().inferIntent(transcript: "Clear cookies. Select cookies. What next?",
+            previous: previous, currentUtterance: "What next?")
+        XCTAssertEqual(result, previous)
+        do {
+            _ = try await fixture.client().inferIntent(transcript: "invalid-intent Clear cookies. Select cookies. What next?",
+                previous: previous, currentUtterance: "What next?")
+            XCTFail("Invented task crossed the pipe")
+        } catch is JevError { }
+    }
+
     func testEightConcurrentOperationsReachEngine() async throws {
         let fixture = try EngineFixture()
         let client = fixture.client()

@@ -1,5 +1,38 @@
 # Box consensus experiment
 
+## Task continuity and multi-click progress
+
+`python3 engine/evals/multistep_guidance.py --live` makes 14 bounded provider
+calls: eight paired intent cases, one continuity selection, then five generated
+cookie-clearing screens. It checks the next control at each stage, a checkbox
+before/after selection, and abstention on visible completion. Speech includes a
+concrete task plus generic help, a within-task step, an unrelated replacement,
+cancellation, completion, and repeating a cancelled request. No real cookies,
+screen capture, microphone, or notes are used. Credentials use the existing
+private stdin helper; the first service error stops the run. Results go to ignored
+`.build/evals/multistep.json`. `--engine` and `--output` select paths;
+`--baseline` uses the compatible legacy goal operation for older binaries.
+
+On October 19, the unchanged release baseline passed 12/13 assertions: it selected
+“Where do I click?” instead of the concrete cookie request in the same utterance.
+It already selected all five screen outcomes correctly. The first paired-intent
+revision retained the broader task but still selected generic immediate focus;
+refining the focus question produced 13/13. Final generated-screen answers took
+162–273 ms, including the visible-completion abstention; the first cold intent
+call took 891 ms, remaining intent calls 76–144 ms. This small comparison verifies
+context retention and synthetic next targets; it does not establish acoustic,
+real-desktop, native AX, or sustained throughput performance. Native/core checks
+separately cover checkbox-state settling, latch preservation and stale results.
+
+A subsequent full 17-case utterance regression exposed a cancellation failure:
+the visible-target Noul scored “Go back” at 0.71 after “cancel that task”. Guidance
+now asks an independent request-activity Noul in the same HTTP call and gates
+each sample before consensus. In the final run all 17 utterance cases and all
+13 multistep assertions passed. Cancellation's presence was still 0.72, but
+activity 0.01 correctly withheld the Box. Multistep screen responses took
+200–388 ms in that run. These are small synthetic observations, not calibrated
+desktop guarantees; activity uses the existing configurable presence threshold.
+
 ## Current utterance and stale goals
 
 `python3 engine/evals/utterance_focus.py --check` validates invented conversation

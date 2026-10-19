@@ -79,6 +79,13 @@ public struct SessionTranscript: Sendable {
         return nil
     }
 
+    /// Cancellation retires all speech already heard, not just the last anchor.
+    /// Later identical wording has new source slots; ASR corrections do not.
+    public func sourceIsNew(_ identity: TranscriptSourceIdentity, since earlier: SessionTranscript) -> Bool {
+        identity.epoch == sourceEpoch && earlier.sourceEpoch == sourceEpoch &&
+            identity.pieces.allSatisfy { $0.id > earlier.nextID }
+    }
+
     private static func sourcePieces(in range: Range<Int>, sources: [RenderedSource]) -> [TranscriptSourceIdentity.Piece] {
         sources.compactMap { source -> TranscriptSourceIdentity.Piece? in
             let start = max(range.lowerBound, source.lower), end = min(range.upperBound, source.upper)

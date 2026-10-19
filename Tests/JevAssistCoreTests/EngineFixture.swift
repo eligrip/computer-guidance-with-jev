@@ -55,6 +55,12 @@ def respond(request):
         if text == "ensemble-rate-limit":
             assert request["input"]["sample_count"] == 3
             reply["error"]["completed_calls"] = 2
+    elif request["op"] == "intent":
+        assert request["input"]["previous_goal"] == "Select cookies"
+        assert request["input"]["previous_task"] == "Clear cookies"
+        assert request["input"]["current_utterance"] == "What next?"
+        task = "invented task" if text.startswith("invalid-intent") else "Clear cookies"
+        reply = {"id":request["id"], "ok":True, "result":{"goal":"Select cookies", "task":task}}
     elif request["op"] == "goal":
         goal = None if text == "none" else (str(os.getpid()) if text == "pid" else text)
         reply = {"id":request["id"], "ok":True, "result":{"goal":goal}}

@@ -51,6 +51,7 @@ public struct GuidanceInput: Sendable {
     public let transcript: String
     public let currentUtterance: String?
     public let goal: String?
+    public let taskAnchor: String?
     public let notes: String
     public let browserContext: String?
     public let accessibilityContext: String?
@@ -60,10 +61,11 @@ public struct GuidanceInput: Sendable {
     /// The caller prepares an upright JPEG within TypeSafe's documented image limits.
     public init(transcript: String, goal: String?, notes: String, browserContext: String?,
                 accessibilityContext: String?, imageJPEG: Data, sampling: BoxSampling = .single,
-                currentUtterance: String? = nil) {
+                currentUtterance: String? = nil, taskAnchor: String? = nil) {
         self.transcript = transcript
         self.currentUtterance = currentUtterance
         self.goal = goal
+        self.taskAnchor = taskAnchor
         self.notes = notes
         self.browserContext = browserContext
         self.accessibilityContext = accessibilityContext
@@ -72,17 +74,27 @@ public struct GuidanceInput: Sendable {
     }
 }
 
+/// Independent exact source selections: immediate focus and the outcome across clicks.
+public struct IntentSelection: Codable, Equatable, Sendable {
+    public let goal: String?
+    public let task: String?
+
+    public init(goal: String?, task: String?) { self.goal = goal; self.task = task }
+}
+
 public struct GuidanceResult: Equatable, Sendable {
     /// Nil means presence/confidence gating did not support showing a target.
     public let box: NormalizedBox?
     public let confidence: Double
     public let presence: Double
+    public let activity: Double?
     public let ensemble: BoxEnsemble?
 
-    public init(box: NormalizedBox?, confidence: Double, presence: Double, ensemble: BoxEnsemble? = nil) {
+    public init(box: NormalizedBox?, confidence: Double, presence: Double, ensemble: BoxEnsemble? = nil, activity: Double? = nil) {
         self.box = box
         self.confidence = confidence
         self.presence = presence
+        self.activity = activity
         self.ensemble = ensemble
     }
 }

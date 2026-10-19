@@ -215,7 +215,8 @@ pub fn speech_context_with_utterance<'a>(
     let latest = candidates.first();
     // A saved broad goal must not stretch the current request back over older
     // commands. History remains available separately for pronoun resolution.
-    let start = latest.map_or(transcript.len(), |span| span.source_start);
+    let start = utterance_start(transcript, utterance)
+        .unwrap_or_else(|| latest.map_or(transcript.len(), |span| span.source_start));
     SpeechContext {
         earlier_conversation: &transcript[..start],
         current_user_request: &transcript[start..],

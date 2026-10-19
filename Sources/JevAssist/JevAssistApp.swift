@@ -194,8 +194,8 @@ private struct SessionView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("KEEPING IN MIND")
-                Text(session.goal ?? "Your intention will emerge as you talk.")
-                    .font(.system(size: 14)).foregroundStyle(session.goal == nil ? .secondary : .primary)
+                Text(session.taskAnchor ?? session.goal ?? "Your intention will emerge as you talk.")
+                    .font(.system(size: 14)).foregroundStyle(session.taskAnchor == nil && session.goal == nil ? .secondary : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading).lineLimit(3)
             }
 

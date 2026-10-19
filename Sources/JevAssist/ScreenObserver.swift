@@ -90,11 +90,15 @@ final class ScreenObserver {
     /// Synthetic pipeline checks distinguish actual encoding from cache hits.
     private(set) var imageEncodingCount = 0
     private var cachedAccessibility = AccessibilityObservationCache()
+    private var trackedControl: AXUIElement?
+    private var controlChanges: ControlStateChangeDetector?
 
     func reset() {
         sceneDetector.reset()
         preparedSnapshot = nil
         cachedAccessibility.reset()
+        trackedControl = nil
+        controlChanges = nil
     }
 
     func sameScene(_ first: ScreenSnapshot, _ second: ScreenSnapshot) -> Bool {
@@ -110,8 +114,64 @@ final class ScreenObserver {
     /// changes advance immediately; smaller real changes briefly settle.
     func observe(_ frame: ScreenSnapshot) -> (changed: Bool, stable: Bool) {
         let observation = sceneDetector.observe(sceneSample(frame), at: ProcessInfo.processInfo.systemUptime)
-        if observation.changed { cachedAccessibility.reset() }
-        return (observation.changed, observation.stable)
+        let control = controlChanges?.observe(trackedControl.flatMap(controlState), at: ProcessInfo.processInfo.systemUptime)
+        if observation.changed || control?.changed == true {
+            trackedControl = nil
+            controlChanges = nil
+            cachedAccessibility.reset()
+            preparedSnapshot = nil // Tiny state changes can have identical thumbnails.
+            if !observation.changed { sceneDetector.reset(); _ = sceneDetector.observe(sceneSample(frame), at: ProcessInfo.processInfo.systemUptime) }
+            return (true, observation.stable)
+        }
+        return (false, observation.stable && control?.stable != false)
+    }
+
+    /// Watch the actual highlighted control, not the mouse or click stream.
+    /// AX exposes checked/selected/expanded/enabled state independently of hover.
+    func trackControl(at rect: CGRect, in frame: ScreenSnapshot) {
+        trackedControl = nil; controlChanges = nil
+        guard AXIsProcessTrusted() else { return }
+        let app = AXUIElementCreateApplication(frame.processID)
+        AXUIElementSetMessagingTimeout(app, 0.015)
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(app, Float(rect.midX), Float(rect.midY), &hit) == .success else { return }
+        let deadline = Date().addingTimeInterval(0.06)
+        for _ in 0..<4 {
+            guard Date() < deadline else { return }
+            guard let element = hit else { return }
+            AXUIElementSetMessagingTimeout(element, 0.015)
+            if let bounds = accessibilityRect(element), bounds.intersects(rect),
+               let state = controlState(element) {
+                trackedControl = element
+                controlChanges = ControlStateChangeDetector(baseline: state)
+                return
+            }
+            var parent: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXParentAttribute as CFString, &parent) == .success,
+                  let parent, CFGetTypeID(parent) == AXUIElementGetTypeID() else { return }
+            hit = unsafeBitCast(parent, to: AXUIElement.self)
+        }
+    }
+
+    private func controlState(_ element: AXUIElement) -> String? {
+        var roleValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
+              let role = roleValue as? String else { return nil }
+        let roles = ["AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXDisclosureTriangle", "AXButton", "AXTab"]
+        guard roles.contains(role) else { return nil }
+        // Focus and text-selection/caret attributes deliberately aren't evidence.
+        var states = [String]()
+        let attributes = role == "AXButton" ? [kAXEnabledAttribute] :
+            [kAXValueAttribute, kAXSelectedAttribute, kAXExpandedAttribute, kAXEnabledAttribute]
+        for attribute in attributes {
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+            if result == .attributeUnsupported || result == .noValue { continue }
+            guard result == .success else { return nil }
+            if let number = value as? NSNumber { states.append("\(attribute)=\(number)") }
+            else if let text = value as? String { states.append("\(attribute)=\(text.prefix(120))") }
+        }
+        return states.isEmpty ? nil : role + ":" + states.joined(separator: ";")
     }
 
     /// Fingerprint-only observations still read fresh pixels and geometry, but
@@ -365,8 +425,10 @@ final class ScreenObserver {
         for attribute in [kAXTitleAttribute, kAXDescriptionAttribute] {
             var value: CFTypeRef?
             if AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
-               let label = value as? String, !label.isEmpty, !labels.contains(label) {
-                labels.append(String(label.prefix(120)))
+               let label = value as? String, !label.isEmpty {
+                let state = controlState(element).map { " [\($0)]" } ?? ""
+                let evidence = String(label.prefix(120)) + state
+                if !labels.contains(evidence) { labels.append(evidence) }
             }
         }
         var children: CFTypeRef?

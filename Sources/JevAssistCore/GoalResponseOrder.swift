@@ -7,6 +7,7 @@ public struct GoalResponseOrder: Sendable {
     private var latestSelection: String?
     private var latestSource: TranscriptSourceIdentity?
     private var selectionRetired = false
+    private var retiredConversation: SessionTranscript?
     public init() {}
 
     public static func echoesStaleAnchor(selection: String?, requestedPrevious: String?, currentGoal: String?) -> Bool {
@@ -86,7 +87,8 @@ public struct GoalResponseOrder: Sendable {
     public mutating func accept(sequence: UInt64, selection: String?,
                                 requestedTranscript: String, currentTranscript: String,
                                 requestedConversation: SessionTranscript? = nil,
-                                currentConversation: SessionTranscript? = nil) -> Bool {
+                                currentConversation: SessionTranscript? = nil,
+                                recoveryUtterance: String? = nil) -> Bool {
         guard sequence > latestAccepted else { return false }
         if let selection {
             guard !selection.isEmpty, requestedTranscript.contains(selection),
@@ -95,8 +97,19 @@ public struct GoalResponseOrder: Sendable {
                 guard let chosen = currentConversation.sourceIdentity(of: selection),
                       chosen == requestedConversation.sourceIdentity(of: selection),
                       let chosenOffset = currentConversation.sourceOffset(of: chosen) else { return false }
+                if let retiredConversation {
+                    guard currentConversation.sourceIsNew(chosen, since: retiredConversation) else { return false }
+                }
                 if let latestSource, let previousOffset = currentConversation.sourceOffset(of: latestSource) {
-                    guard chosenOffset >= previousOffset else { return false }
+                    // Two independent intent questions may recover an earlier
+                    // concrete task hidden by a generic clause in THIS utterance.
+                    // Never recover a retired anchor or a source from an older turn.
+                    let recovering = !selectionRetired && recoveryUtterance.map { utterance in
+                        guard let scope = currentConversation.sourceIdentity(of: utterance),
+                              let start = currentConversation.sourceOffset(of: scope) else { return false }
+                        return chosenOffset >= start && previousOffset >= start
+                    } == true
+                    guard chosenOffset >= previousOffset || recovering else { return false }
                     if selectionRetired && chosenOffset == previousOffset { return false }
                 }
                 latestSource = chosen
@@ -113,6 +126,7 @@ public struct GoalResponseOrder: Sendable {
             // An old empty answer knows nothing about the words just spoken.
             return false
         } else {
+            if latestSelection != nil && !selectionRetired { retiredConversation = currentConversation }
             selectionRetired = true
         }
         latestAccepted = sequence

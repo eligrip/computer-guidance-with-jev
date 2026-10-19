@@ -35,7 +35,7 @@ final class SessionRecorder {
     private let budget: RecordingQueueBudget
     private var activeToken: UUID?
     private var startedAt: TimeInterval = 0
-    private var lastContext: (String, String?, String?)?
+    private var lastContext: (String, String?, String?, String?)?
 
     init(rootURL: URL? = nil, limits: RecordingLimits = RecordingLimits()) {
         writer = SessionRecordingWriter(root: rootURL ?? Self.recordingsURL, limits: limits)
@@ -85,16 +85,18 @@ final class SessionRecorder {
         return enqueue(cost: jpeg.count + 4096) { try $0.appendFrame(entry, jpeg: jpeg) } ? frameID : nil
     }
 
-    func recordContext(transcript: String, goal: String?, currentUtterance: String? = nil) {
+    func recordContext(transcript: String, goal: String?, currentUtterance: String? = nil, task: String? = nil) {
         let text = TranscriptContext.retainingRecent(transcript)
         let anchor = goal.map { String($0.prefix(2_000)) }
+        let task = task.map { String($0.prefix(2_000)) }
         let utterance = currentUtterance.flatMap { text.contains($0) ? String($0.prefix(4_000)) : nil }
-        guard lastContext?.0 != text || lastContext?.1 != anchor || lastContext?.2 != utterance else { return }
+        guard lastContext?.0 != text || lastContext?.1 != anchor || lastContext?.2 != utterance || lastContext?.3 != task else { return }
         var entry = event("context")
         entry.transcript = text
         entry.goal = anchor
+        entry.task = task
         entry.currentUtterance = utterance
-        if enqueue(entry) { lastContext = (text, anchor, utterance) }
+        if enqueue(entry) { lastContext = (text, anchor, utterance, task) }
     }
 
     func recordSpeech(_ telemetry: SpeechRecognitionTelemetry) {
@@ -118,6 +120,7 @@ final class SessionRecorder {
         entry.frameID = frameID
         entry.confidence = result?.confidence.finiteValue
         entry.presence = result?.presence.finiteValue
+        entry.activity = result?.activity?.finiteValue
         entry.box = result?.box.flatMap { $0.isValid ? $0 : nil }
         entry.ensemble = result?.ensemble
         entry.latencyMS = latencyMS.finiteValue
@@ -155,7 +158,7 @@ final class SessionRecorder {
 
     @discardableResult
     private func enqueue(_ event: RecordingEvent) -> Bool {
-        enqueue(cost: (event.transcript?.utf8.count ?? 0) + (event.goal?.utf8.count ?? 0) + 4096) { try $0.append(event) }
+        enqueue(cost: (event.transcript?.utf8.count ?? 0) + (event.goal?.utf8.count ?? 0) + (event.task?.utf8.count ?? 0) + 4096) { try $0.append(event) }
     }
 
     private func enqueue(cost: Int, operation: @escaping (SessionRecordingWriter) throws -> Void) -> Bool {
@@ -240,10 +243,12 @@ struct RecordingEvent: Codable {
     var requestID: String?
     var transcript: String?
     var goal: String?
+    var task: String?
     var currentUtterance: String?
     var speech: SpeechRecognitionTelemetry?
     var confidence: Double?
     var presence: Double?
+    var activity: Double?
     var box: NormalizedBox?
     var ensemble: BoxEnsemble?
     var targetRect: RecordingRect?

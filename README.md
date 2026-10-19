@@ -80,6 +80,12 @@ The **Swift native shell** handles speech, permissions, capture, screen coordina
 
 The engine uses `jev-1.14.0`. A [Box question](https://docs.typesafe.ai/primitives/box) locates a useful target, while a separate presence question gates whether to use it: Box returns coordinates even when the target is absent. Code validates responses and maps normalized image coordinates back to macOS screen points. Results from old screens or stopped sessions are discarded, and fresh replies cannot move an already-held box on an unchanged screen.
 
+One intent request asks two independent Choice questions: the immediate spoken step and the broader task across clicks. Both select exact source text from the full latest utterance. Generic follow-ups such as “what next?” retain the task; unrelated requests replace it. Paired source validation rejects stale responses and previously cancelled sources while allowing new occurrences of repeated words. **Keeping in mind** displays the task.
+
+Guidance also asks a separate Noul question about whether the user still has an active request. Explicit cancellation withdraws help rather than suggesting a Cancel or Go back button. Activity and visible presence must each meet the configured presence threshold (default 0.65), with Box confidence gated separately; their probabilities are not multiplied. Raw activity judgments remain available in local replay.
+
+While a box is held, the native shell watches the highlighted control's accessibility value, selected/expanded state and enabled state. A checkbox tick can advance guidance even when it is too small for the screen thumbnail. The changed state must remain observed for 120 ms. Clicks, focus changes and failed accessibility reads do not release the box. Apps that do not expose these states still use visual scene detection.
+
 Captured page content is evidence, never executable instructions. Concurrency is bounded, and rate limits or temporary provider failures trigger shared backoff. Actual responsiveness depends on capture, transcription, network latency, and service availability; request scheduling rates are not end-to-end latency guarantees.
 
 | Location | Responsibility |

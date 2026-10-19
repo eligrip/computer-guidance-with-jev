@@ -126,7 +126,7 @@ async def run(executable, selected_names=None):
                     passed = box is None if case["x"] is None else box is not None and (
                         abs((box["left"] + box["right"]) / 2 - case["x"]) < .12 and
                         .45 < (box["top"] + box["bottom"]) / 2 < .75)
-                    row.update(passed=passed, box=box, presence=response["result"]["presence"])
+                    row.update(passed=passed, box=box, presence=response["result"]["presence"], activity=response["result"].get("activity"))
                 observations.append(row)
                 print(json.dumps(row, ensure_ascii=False), flush=True)
                 if provider_error:

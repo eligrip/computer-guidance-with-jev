@@ -132,6 +132,7 @@ async fn live_fast_guidance_throughput() {
                 let mut request = fixture_request(op);
                 request.api_key = api_key.clone();
                 match &mut request.operation {
+                    Operation::Intent(_) => unreachable!(),
                     Operation::Guidance(input) => {
                         input.transcript = "Open the shared album. Now download it.".to_owned();
                         input.goal = Some("Open the shared album.".to_owned());

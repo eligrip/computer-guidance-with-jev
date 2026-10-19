@@ -33,7 +33,9 @@ pub fn combine(
                 && sample.confidence > 0.0
                 && sample.confidence >= minimum_confidence
                 && valid_probability(sample.presence)
-                && sample.presence >= minimum_presence)
+                && sample.presence >= minimum_presence
+                && valid_probability(sample.activity)
+                && sample.activity >= minimum_presence)
                 .then_some(index)
         })
         .collect();
@@ -72,6 +74,10 @@ pub fn combine(
         r#box: None,
         confidence: 0.0,
         presence: 0.0,
+        activity: samples
+            .iter()
+            .map(|sample| sample.activity)
+            .fold(1.0, f64::min),
         ensemble: None,
     };
     let mut method = if valid.len() < 2 {
@@ -80,6 +86,10 @@ pub fn combine(
         EnsembleMethod::NoAgreement
     };
     if !selected.is_empty() {
+        result.activity = selected
+            .iter()
+            .map(|&i| samples[i].activity)
+            .fold(1.0, f64::min);
         let total: f64 = selected.iter().map(|&i| samples[i].confidence).sum();
         let mut averaged = NormalizedBox {
             top: 0.0,

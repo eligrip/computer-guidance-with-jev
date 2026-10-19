@@ -11,6 +11,89 @@ mod cooldown;
 #[path = "../../evals/transport_compare.rs"]
 mod transport_compare;
 
+#[tokio::test]
+async fn paired_intent_keeps_full_utterance_and_independent_source_candidates() {
+    let transcript = "Clear Zoë’s cookies. Where do I click?";
+    let mut request = fixture_request("goal");
+    request.operation = Operation::Intent(IntentInput {
+        transcript: transcript.to_owned(),
+        current_utterance: Some(transcript.to_owned()),
+        previous_goal: Some("Where do I click?".to_owned()),
+        previous_task: None,
+    });
+    let mut answer = goal_answer("source_1", 0.8);
+    answer["answers"]["task"] = json!({"type":"choice", "choice":"source_1", "confidence":0.9});
+    let (engine, server) = fixture_server(200, &answer.to_string(), "").await;
+    let selected = engine.execute(&request).await.unwrap();
+    assert_eq!(
+        selected,
+        ResultValue::Intent {
+            goal: Some("Clear Zoë’s cookies.".to_owned()),
+            task: Some("Clear Zoë’s cookies.".to_owned())
+        }
+    );
+    let wire = server.await.unwrap();
+    let split = wire.windows(4).position(|v| v == b"\r\n\r\n").unwrap() + 4;
+    let payload: Value = serde_json::from_slice(&wire[split..]).unwrap();
+    assert_eq!(payload["state"]["current_user_request"], transcript);
+    assert_eq!(
+        payload["state"]["latest_spoken_clause"],
+        "Where do I click?"
+    );
+    assert_eq!(payload["questions"].as_object().unwrap().len(), 2);
+    for question in ["goal", "task"] {
+        assert_eq!(
+            payload["questions"][question]["criteria"]["source_1"]["verbatim_user_words"],
+            "Clear Zoë’s cookies."
+        );
+    }
+}
+
+#[tokio::test]
+async fn paired_intent_validates_both_answers_and_rejects_invented_task() {
+    for task in [
+        json!({"type":"choice","choice":"invented","confidence":0.9}),
+        json!({"type":"noul","choice":"source_0","confidence":0.9}),
+        json!({"type":"choice","choice":"source_0","confidence":1.5}),
+        json!(null),
+    ] {
+        let mut request = fixture_request("goal");
+        request.operation = Operation::Intent(IntentInput {
+            transcript: "Open Mail".to_owned(),
+            current_utterance: Some("Open Mail".to_owned()),
+            previous_goal: None,
+            previous_task: None,
+        });
+        let mut answer = goal_answer("source_0", 0.9);
+        answer["answers"]["task"] = task;
+        let (engine, server) = fixture_server(200, &answer.to_string(), "").await;
+        assert!(engine.execute(&request).await.is_err());
+        server.await.unwrap();
+    }
+}
+
+#[test]
+fn task_context_is_exact_speech_and_cannot_be_injected_by_caller() {
+    let mut request = fixture_request("guidance");
+    let Operation::Guidance(input) = &mut request.operation else {
+        unreachable!()
+    };
+    input.transcript = "Clear cookies. What next?".to_owned();
+    input.current_utterance = Some(input.transcript.clone());
+    input.task_anchor = Some("Clear cookies.".to_owned());
+    let payload = guidance_payload("jev-1.14.0", input, "image");
+    assert_eq!(
+        payload["state"]["task_anchor_from_user_speech"],
+        "Clear cookies."
+    );
+    assert_eq!(payload["state"]["current_user_request"], input.transcript);
+    input.task_anchor = Some("invented summary".to_owned());
+    assert!(
+        guidance_payload("jev-1.14.0", input, "image")["state"]["task_anchor_from_user_speech"]
+            .is_null()
+    );
+}
+
 fn fixture_request(op: &str) -> Request {
     let input = if op == "guidance" {
         json!({
@@ -31,8 +114,27 @@ fn fixture_request(op: &str) -> Request {
 fn guidance_answer(presence: f64, confidence: f64) -> Value {
     json!({ "answers": {
         "target": { "type": "box", "box": { "top": 0.1, "bottom": 0.2, "left": 0.3, "right": 0.4 }, "confidence": confidence },
-        "target_present": { "type": "noul", "noul": presence }
+        "target_present": { "type": "noul", "noul": presence },
+        "request_active": { "type": "noul", "noul": 1.0 }
     }})
+}
+
+#[test]
+fn inactive_request_vetoes_a_plausible_visible_target_without_losing_raw_evidence() {
+    let mut answer = guidance_answer(0.99, 0.99);
+    answer["answers"]["request_active"]["noul"] = json!(0.02);
+    let body = serde_json::to_vec(&answer).unwrap();
+    let raw = parse_guidance_sample(&body).unwrap();
+    assert!(raw.r#box.is_some());
+    assert_eq!(raw.activity, 0.02);
+    assert!(parse_guidance(&body, 0.65, 0.25).unwrap().r#box.is_none());
+    let group = ensemble::combine(vec![raw; 3], 0.65, 0.25);
+    assert!(group.r#box.is_none());
+    assert!(group.ensemble.unwrap().selected_indices.is_empty());
+    for invalid in [json!(-0.1), json!(1.1), json!("yes"), json!(null)] {
+        answer["answers"]["request_active"]["noul"] = invalid;
+        assert!(parse_guidance_sample(&serde_json::to_vec(&answer).unwrap()).is_err());
+    }
 }
 
 fn goal_answer(choice: &str, confidence: f64) -> Value {

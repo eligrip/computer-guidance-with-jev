@@ -54,6 +54,9 @@ function scrub(index) { element('scrub').value = String(index); element('scrub')
   scrub(3);
   assert.equal(element('held').hidden, true);
   assert.equal(element('candidate').hidden, true);
+  await load([{kind: 'context', transcript: 'Clear cookies. Select cookies. What next?',
+    goal: 'Select cookies', task: 'Clear cookies'}, frame]);
+  assert.equal(element('goal').textContent, 'Clear cookies', 'Replay must preserve the task independently from its immediate step');
   await load([{...frame, imagePath: 'https://invalid.example/private-image'}]);
   assert.equal(element('screen').hidden, true);
   await load([{...frame, imagePath: '../../unrelated-file.jpg'}]);
