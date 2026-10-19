@@ -1,14 +1,29 @@
 # Computer Guidance with Jev
 
-A native Mac prototype that listens while you talk through what you want to do and highlights a helpful control on your screen. You do every click, keystroke, and scroll.
+A native Mac assistant that listens while you talk and highlights the next helpful control on your screen. You do every click, keystroke, and scroll.
 
-There is no required goal-setting step or scripted task flow. Jev interprets your evolving speech and the current interface. It intermittently picks a passage from your own words to retain as a goal anchor.
+Built for people who want help finding their way around a computer, Jev Assist works from your evolving speech and the current interface. Start a help session and talk naturally, even while you are still figuring out what you need. Jev selects context from your own words and provides visual guidance without requiring a predefined workflow or generating spoken instructions.
 
-**A highlight stays put until the screen meaningfully changes.** Speaking more, clicking without changing the interface, a slow request, or a new model response cannot erase it. Stop the help session to clear it explicitly.
+**This is an experimental developer prototype, built from source.** Multi-click flows and transitions between tasks can still stall or suggest the wrong control. Images and Box are experimental [TypeSafe features](https://docs.typesafe.ai/primitives/box).
 
-## Run on your Mac
+## What to expect
 
-Requires macOS 13 or newer, Swift 5.9+ from Apple's Command Line Tools, and a current stable Rust toolchain (`cargo`). The native shell has no third-party Swift dependencies; the Rust engine's dependencies are pinned in `engine/Cargo.lock`. Speech settings let you choose a language and either on-device-only recognition or opt into Apple's online recognition. Typed input is also available.
+- **Continuous guidance:** partial speech and screen changes trigger fresh checks during your help session.
+- **A steady highlight:** the box stays until meaningful screen content, layout, or the foreground window changes. A click, more speech, a timer, or a low-confidence reply alone cannot remove or replace it. Stopping the session clears it.
+- **Mac and browser context:** capture covers the active app, its menus/popovers, and the visible Dock. An optional Chrome extension adds loaded page text and control descriptions.
+- **You stay in control:** the app points; it never clicks, types, scrolls, or runs commands on your behalf.
+
+## Quick start
+
+You need:
+
+- macOS 13 or newer.
+- Apple's Command Line Tools with Swift 5.9 or newer.
+- A current stable Rust toolchain with `cargo`.
+- Python 3 for key setup, local signing, and restart helpers.
+- A TypeSafe API key and an internet connection for Jev requests. Active sessions incur API usage.
+
+Run in a terminal:
 
 ```sh
 git clone https://github.com/eligrip/computer-guidance-with-jev.git
@@ -19,90 +34,65 @@ python3 scripts/local-signing.py setup
 ./scripts/run.sh
 ```
 
-The setup helper reads the API key without echoing it and writes an ignored `.env.local` with owner-only permissions. The app can read that file in this checkout; a key entered in the app's settings is stored in macOS Keychain. Never put a key into the browser extension.
+The build creates `dist/JevAssist.app`; the last command opens it. Key setup hides your input and saves `TYPESAFE_API_KEY` to the ignored, owner-only `.env.local`. Skip that setup command if you already have the file. Keys saved through the app's settings use macOS Keychain.
 
-1. Choose **Start help session**. If setup is needed, the app walks you through three groups: **Screen access**, **Accessibility**, and **Voice**.
-2. Follow the single next-step button. Already-granted access gets a checkmark. Voice combines microphone access, speech permission, and local Dictation setup. Setup stays in the main window so it cannot block macOS’s **Quit & Reopen** action. The app checks automatically when you return from System Settings and resumes setup after a required restart.
-3. When all three are ready, choose **Start help session**, open the app you want help with, and talk naturally.
+Local signing gives development builds a stable identity so macOS can retain permissions between rebuilds. Keep the ignored `.local-signing/` directory private and reuse it.
 
-You can also type a thought into the panel. The menu-bar icon opens session controls; **Stop help session** ends capture and transcription and removes the box.
+### Start your first help session
 
-Use **Restart** in the main panel, or **⌘R**, to restart the installed app. To apply a prepared update as well, double-click **Restart Jev Assist.command** in this checkout, or run `./scripts/restart.sh`. The launcher checks the staged app’s signature and signing identity, closes only this checkout’s running app, and keeps a backup for recovery. An ordinary restart does not compile anything.
+1. Choose **Start help session**. If needed, follow setup for **Screen access**, **Accessibility**, and **Voice**. Granted permissions are skipped; the app rechecks when you return from System Settings.
+2. Once setup is ready, choose **Start help session**, then open the app you want help with.
+3. Say what you are trying to do—for example, “I'm trying to find the attachment in this email.” Follow a useful highlight yourself and keep talking as needed. You can also type into the session panel.
+4. Choose **Stop help session** to end capture and transcription and clear the highlight. The menu-bar icon opens the session controls.
 
-**Highlight style** offers three native vector previews: Soft outline (default), Corner guides, and Underline. A style change redraws the current target without moving it or resetting the highlight latch.
+## Settings and context
 
-**Hearing you** shows the current request and follow-up speech, starting at the exact passage Jev selected. When you move to another task, earlier words move into a collapsed **Earlier conversation** section. Before Jev has selected a request, the panel shows a recent excerpt. The app still retains up to 24,000 characters of conversation; guidance receives the current request and earlier conversation in separate fields so old instructions do not compete with a new task. **Keeping in mind** follows the latest task expressed in your own words, including a change of task without an explicit cancellation.
+| Control | What it does |
+| --- | --- |
+| **Hearing you / Earlier conversation** | Shows current speech separately from earlier context. |
+| **Keeping in mind** | Shows context selected verbatim from your words. |
+| **Your notes** | Opens `~/Library/Application Support/JevAssist/user_notes.md` for preferred apps, recurring tasks, or vocabulary. Notes are request context; the app does not silently write inferred facts into them. |
+| **Highlight style** | Choose Soft outline (default), Corner guides, or Underline. Restyling keeps the target in place. |
+| **Settings → Guidance pace** | Fast (default) allows six concurrent target requests; Balanced allows one. Both continue checking while a highlight is held and honor provider backoff. |
+| **Settings → Box checks** | Single check is the default. Three checks experimentally combines overlapping boxes from three simultaneous calls. Agreement is not proof of accuracy. |
 
-**Settings → Guidance pace** defaults to **Fast**: six target requests can run concurrently, with new dispatches at least 20 ms apart. **Balanced** uses one target request and a 250 ms minimum interval. Both keep checking after a highlight appears; those checks cannot replace a box on an unchanged screen. The panel reports completed target/goal calls, recent calls per second, and latency.
+Screenshots work without an extension. For richer Chrome context, follow the [browser setup guide](browser-extension/README.md). Sharing is explicit and limited to the active loaded page in the focused Chrome window. The extension contains no API key and does not fetch link destinations or search the web.
 
-**Settings → Box checks → Three checks** enables an experiment alongside the default **Single check**. Each batch sends the same screenshot, context, and question in three simultaneous Jev calls. After presence/confidence gating, Rust averages the edges of agreeing boxes using their confidence as weights. All selected boxes must overlap each other with intersection-over-union of at least 0.5; if all three do not agree, it chooses the strongest agreeing pair. With no pair, it keeps checking instead of averaging different targets. Fast mode allows two three-call batches at a time, alongside up to two goal checks; Balanced allows one batch. The engine and native pipe each enforce a bound of ten outstanding operations/HTTP calls, including work draining from a stopped session. Changing this setting never releases an existing highlight.
+## Privacy and local recordings
 
-Recordings retain all three answers and the selected indices for comparison with the final box. Repeated calls can produce identical or correlated answers; this experiment measures whether combining them helps, without treating agreement as increased certainty. The existing thresholds and overlap cutoff are prototype tuning values.
+During an active help session:
 
-### Speech setup and recovery
+| Data | Where it goes |
+| --- | --- |
+| Active-window and visible-Dock images, speech **as text**, selected context, personal notes, and available browser/accessibility context | Directly to TypeSafe for guidance. |
+| Microphone audio | Stays on the Mac with the default **On-device only** recognition mode. Explicitly choosing **Allow Apple online recognition** may send audio to Apple. Audio is never sent to TypeSafe. |
+| API key | Loaded locally from Keychain or local configuration and passed to the Rust engine over process pipes, never in command-line arguments or the extension. |
 
-Normal setup uses the **Voice** step, with no provider or language choices to navigate. **Settings → Permissions** reopens the three-step guide. **Settings → Advanced speech** lets you change the spoken language or recognition mode when needed. **On-device only** is the default. Apple can report its recognition service as available even when its on-device model is unavailable to this app. That is a language/model availability check, not a claim that your Mac cannot transcribe speech.
+**Session recording defaults on when running from a developer checkout**, and off elsewhere. Change **Settings → Save session recordings on this Mac** before a session if needed. A visible indicator marks active recording.
 
-If the local model is unavailable, open **macOS Dictation settings**, enable Dictation, and select the same language under Keyboard → Dictation. Allow time for Apple to prepare the language assets, then use **Check availability again** and **Apply and retry microphone**. The app checks the actual speech API capability; it does not assume enabling Dictation guarantees that the assets are ready.
+Recordings save request screenshots, conversation text, selected context, decisions, timing, and highlight events under `~/Library/Application Support/JevAssist/recordings`. They contain no raw microphone audio or API credentials. Storage uses owner-only permissions and is capped at 256 MiB per session, 1 GiB overall, and 20 sessions; older recordings are pruned.
 
-On a development Mac running macOS 14.5, enabling English (US) Dictation changed `supportsOnDeviceRecognition` from false to true and made the synthetic local transcription check pass. See [Apple’s Dictation setup instructions](https://support.apple.com/guide/mac-help/mh40584/mac).
-
-**Allow Apple online recognition** is an explicit alternative; audio may then be sent to Apple. The setting is saved only when you click **Save speech settings** or **Apply and retry microphone**. Retrying during a help session preserves the conversation and guidance. The settings also link to microphone and speech permissions.
-
-Before testing permissions on your development Mac, run `python3 scripts/local-signing.py setup` once, then rebuild. This creates a stable local signing certificate in an ignored, owner-only `.local-signing` directory. The helper uses an isolated password-protected keychain, temporarily adds it to the signing search list, and restores that list afterward. It does not change certificate trust or macOS permissions. Future builds reuse this identity so their designated requirement remains stable. Keep this directory between builds; its private material must never be committed or shared.
-
-Switching from an earlier ad-hoc build may require one final permission refresh. Setup offers **Restart Jev Assist** to apply Screen Recording changes, and keeps restart available after permission repair. If a switch is on but access remains unavailable after restarting, macOS may still hold the previous build’s signing requirement: quit Jev Assist, remove only its entry from the affected permission list, and add `dist/JevAssist.app` again. Toggling an old entry off and on does not always replace that requirement. Completed permissions always skip ahead automatically. Without a local identity, builds remain ad-hoc and print a warning that permissions may not survive changes. For distribution, use an Apple-issued identity through `JEV_ASSIST_SIGNING_IDENTITY`.
-
-## Browser context
-
-Screenshots work without a browser extension. For richer Chrome page context, load the companion extension and install its local native messaging bridge using the [browser setup instructions](browser-extension/README.md).
-
-The extension provides the active page's URL, loaded text, and control/link descriptions, including visibility and position. It does not fetch arbitrary URLs, search the web, bypass logins, or claim access to unloaded page content. Browser context is optional and expires quickly when sharing stops or the page loses focus.
-
-## Personal notes
-
-The **Your notes** button opens:
-
-```text
-~/Library/Application Support/JevAssist/user_notes.md
-```
-
-Add preferred apps, recurring tasks, or vocabulary such as what you mean by “my email.” These notes are included in guidance requests during an active session. They are editable local context, not model training. The prototype selects session goals automatically but does not silently write inferred facts into your personal notes.
+To review a recording, choose **Open recordings**, open a run's `review.html`, and select its `events.ndjson`. Keep those files and `frames/` together. Replay works offline. Screenshots, transcripts, recordings, personal notes, credentials, and signing material must stay out of Git and public bug reports.
 
 ## How it works
 
-A Rust engine handles Jev requests, verbatim goal selection, and answer validation. A thin Swift shell handles macOS speech, screen capture, permissions, and the overlay. They communicate over private process pipes; there is no local HTTP server. The engine reuses independent HTTP/1.1 connections and handles goal and guidance requests concurrently. Local tests found correlated failures on pooled HTTP/2; HTTP/1.1 isolates connection failures while retaining bounded parallelism.
+The **Swift native shell** handles speech, permissions, capture, screen coordinates, scheduling, and the highlight. The **Rust engine** handles Jev HTTP calls, exact source-text selection, typed decisions, and probability validation. They communicate through local process pipes, without a local web server.
 
-- **Speech:** Apple's speech recognizer streams partial transcripts in your selected language. On-device-only mode keeps audio local; online recognition is an explicit alternative. Audio timestamps distinguish a new utterance from a correction, so recognition can roll to a new phrase without deleting earlier context. Overlapping hypotheses are revised and cumulative results are deduplicated. Untimed results retain replacement semantics because a shorter string alone cannot establish a new utterance. An unfinished zero-duration word no longer discards usable timing from preceding words. Apple punctuation is enabled; a measured pause of at least 0.8 seconds identifies the latest exact utterance within a cumulative hypothesis. This focuses context without waiting for silence or dropping earlier conversation.
-- **Observation:** the app captures the active external window, its menus/popovers, and the visible Dock on the same display. It finds the painted Dock inside macOS's sometimes display-sized transparent backing window. A shallow browser toolbar overlapping a substantial same-app page is composited with that page instead of becoming the entire capture. With no foreground window, it can capture the visible Dock alone. Other apps, wallpaper, and its own highlight are excluded. Every third request uses a closer Dock image with its own coordinate mapping. Observation and display validation skip JPEG encoding; only actual requests encode their exact captured pixels. A prepared image can be reused for at most 500 ms when geometry and both fingerprints match exactly; hits never extend that deadline. App and Dock views share one raw accessibility observation, refreshed within one second; screen-coordinate rectangles are mapped separately into each image view. Separate Dock samples detect substantial content changes; tiny badges, caret blinks, and hover color changes do not release a box. A hidden Dock cannot supply visible targets until the user reveals it.
-- **Guidance:** `jev-1.14.0` receives recent speech, the goal anchor, notes, current screenshot, and available browser/accessibility context. A Box question locates the next useful target; a Noul question checks whether a useful target is visible.
-- **Goal anchor:** a separate Choice selects the latest actionable source clause, including a concrete next step within the same task. Older conversation remains available for pronouns and context. Fast mode checks changed speech at least 120 ms apart, allows two goal checks in flight, and reconsiders unchanged speech every 500 ms. A slower older answer cannot replace a newer selection, and corrected-away words cannot become the goal again. This continues while the app panel is open or capture is unavailable. The current audio utterance is supplied separately and limits new goal candidates; older conversation is background, and keeping the existing goal is an explicit option. Stable source identities prevent earlier recognition corrections from invalidating current answers and distinguish a repeated request from its older occurrence. Older source selections cannot revive a superseded or cancelled request. The app never asks Jev to generate goal text.
-- **Presentation:** a deterministic latch accepts a box for the current screen generation. Responses from old screens and stopped sessions are discarded. Further responses cannot move the box on the unchanged screen. The default outline uses a 5.5-point teal border with contrasting edges. Each accepted new box gets one 0.85-second arrival halo; Reduce Motion skips animation. The steady outline remains visible afterwards.
-- **Scheduling:** partial speech schedules fresh evaluation immediately. The newest context is evaluated again as soon as a request slot opens. Fast mode uses a 40 ms observation delay, six concurrent single-check guidance requests, and up to two independent goal requests. Inference refills separately from observation and can reuse a recent exact frame. Only a potentially displayable result needs fresh pixel validation; held, absent, or already stale results do not perform another screen capture. Balanced uses a 160 ms loop and one guidance request. Three checks allows two batches of three concurrent calls in Fast, one in Balanced. These are scheduling bounds, not a guaranteed completion rate; capture, network latency, and rate limits determine actual throughput. Rate limits and temporary service failures immediately establish a shared monotonic backoff inside the engine, including while a three-call group is still finishing. New and queued requests fail promptly during that interval, so stale screenshots do not wait to be sent later. A concurrent successful response cannot shorten a retry deadline; missing server hints use exponential backoff from 250 ms to 2 s. A failed member fails its batch, and the returned delay reflects the time still remaining.
+The engine uses `jev-1.14.0`. A [Box question](https://docs.typesafe.ai/primitives/box) locates a useful target, while a separate presence question gates whether to use it: Box returns coordinates even when the target is absent. Code validates responses and maps normalized image coordinates back to macOS screen points. Results from old screens or stopped sessions are discarded, and fresh replies cannot move an already-held box on an unchanged screen.
 
-Images and Box are experimental TypeSafe features. Confidence thresholds and screen-change sensitivity are prototype defaults; they need evaluation on actual desktop tasks. A presence judgment does not prove the returned box is the correct action.
+Captured page content is evidence, never executable instructions. Concurrency is bounded, and rate limits or temporary provider failures trigger shared backoff. Actual responsiveness depends on capture, transcription, network latency, and service availability; request scheduling rates are not end-to-end latency guarantees.
 
-### From Jev's box to your screen
+| Location | Responsibility |
+| --- | --- |
+| `Sources/JevAssist/` | Native app, speech, capture, overlay, and session scheduling |
+| `Sources/JevAssistCore/` | Rust process adapter, shared types, source tracking, and highlight latch |
+| `engine/` | Rust Jev integration and source-span selection |
+| `Sources/JevAssistBridge/`, `browser-extension/` | Optional Chrome native messaging bridge and page collector |
+| `Tests/`, `scripts/` | Synthetic tests, build/setup helpers, and diagnostics |
 
-Each screenshot retains the captured surfaces' combined position and size in macOS screen points, plus any image padding. For a normalized horizontal edge `u`, the screen coordinate is `captureX + ((u - paddingLeft) / contentWidth) * captureWidth`; vertical edges use the same calculation. The overlay then converts the top-origin screen coordinates to AppKit's bottom-origin coordinates. Retina pixels never get mistaken for screen points. Window moves and Dock/layout changes invalidate earlier requests.
+## Development
 
-Native self-tests check padding, image limits, coordinate scaling, and a display placed above and left of the primary screen. Physical multi-monitor and live permission-dependent capture still need hands-on testing.
-
-## Data boundaries
-
-During a help session, the current external window and visible Dock image, recent speech **as text**, selected goal, notes, and available interface context are sent directly to TypeSafe. Audio stays on the Mac in the default on-device-only mode. If you explicitly allow Apple online recognition, audio may be sent to Apple for transcription; audio is never sent to TypeSafe. The optional extension writes only its latest context to a local file with restricted permissions.
-
-### Local session recordings
-
-While iterating from a developer checkout, session recording defaults on. Other installations default off. **Settings → Save session recordings on this Mac** controls it, and an indicator stays visible during a recorded session. This saves the JPEGs sent to Jev, conversation text, goal changes, decision probabilities, latency, and highlight/display-suppression events under `~/Library/Application Support/JevAssist/recordings`. It also records goal dispatch/reply timing and text-free recognition timing/counts. The speech audio-end-to-callback interval is an estimate from Apple segment timing, not an acoustic ground-truth measurement. It records neither raw microphone audio nor API credentials. **Open recordings** opens that folder.
-
-Recordings use owner-only folders/files and never enter Git. Repeated identical images are deduplicated; asynchronous writing cannot block guidance. Limits are 256 MiB per session, 1 GiB overall, and 20 sessions. Old recordings are removed to stay within those limits, and a full/failing disk stops recording without stopping assistance. Recording starts only with an active help session and ends when it stops or recording is disabled.
-
-Open a run’s `review.html`, choose `events.ndjson` from the same folder, then scrub or play the timeline. Solid teal marks the held highlight; dashed amber marks the final Jev suggestion. Three-check decisions also show the three original boxes in muted colors, with numbered labels, each sample’s confidence/presence, selected versus excluded samples, the consensus method, and its IoU threshold. Excluded samples have dotted outlines. The recorded final box is displayed unchanged. The viewer shows the request’s conversation, goal, latency, and display/suppression reasons without a server or network access; missing request screenshots are never replaced with an earlier frame. Keep `review.html`, `events.ndjson`, and `frames/` together.
-
-The app never clicks, types, scrolls, or runs commands on your behalf. Page content is treated as evidence, not executable instructions. A browser page may contain sensitive text, so only start sharing a page you intend to use with the assistant.
-
-## Development and verification
+Run these checks from the repository root. Node.js is needed for the browser and recording tests; CI uses Node 22.
 
 ```sh
 cargo test --manifest-path engine/Cargo.toml --locked
@@ -110,41 +100,30 @@ bash scripts/test-core.sh
 node --test Tests/browser-extension.test.mjs
 node scripts/test-recording-review.cjs
 ./scripts/restart.sh --self-test
-./scripts/build.sh
-dist/JevAssist.app/Contents/MacOS/JevAssist --self-test
-JEV_ASSIST_BRIDGE_TEST_BINARY="$PWD/dist/JevAssist.app/Contents/MacOS/JevAssistBridge" python3 Tests/browser-bridge.test.py -v
 ```
 
-The tests cover highlight persistence, stale responses, session boundaries, exact goal selection, API payloads, malformed output, Rust process reuse, cancellation, and restart. Native checks cover image preparation and screen coordinates. Browser bridge tests use temporary directories and synthetic messages. With full Xcode installed, `swift test --disable-sandbox` also runs the XCTest suite; Command Line Tools alone may lack XCTest. GitHub Actions runs the full suite on macOS.
+The standalone core harness works with Command Line Tools. Full Xcode also supports `swift test --disable-sandbox`. The [macOS CI workflow](.github/workflows/checks.yml) includes the full suite, a signed build, native coordinate checks, and bridge protocol tests. Use synthetic fixtures; keep private screen and speech data local.
 
-To prepare an update while an existing demo stays running, use `./scripts/build.sh --stage`. This writes a separately signed bundle to `.build/next/JevAssist.app` and leaves `dist/JevAssist.app` untouched. When ready, double-click **Restart Jev Assist.command** or run `./scripts/restart.sh` to install the verified update and reopen it at the established bundle path. Only a different, newer staged build is installed: the launcher compares main-executable modification times, refreshed by packaging/signing and preserved when installing. An older or equal-time stage is ignored, so it cannot replace a newer normal build. If bundle timestamps have been manually changed, rebuild the stage before installing it. `./scripts/restart.sh --dry-run` checks what would happen without stopping, copying, building, or opening an app. If no installed or staged app exists, the launcher builds a staged app once. Previous versions are retained under the ignored `.build/restart-backups` directory; an unsuccessful update restores and reopens the previous app when possible.
-
-To verify an installed English (US) speech model on your Mac, run `swift scripts/check-local-speech.swift`. It synthesizes a fixed sentence into a temporary file and transcribes it with on-device recognition required. It never opens the microphone, sends a Jev request, or opts into online transcription. Run it outside restrictive process sandboxes so it can reach Apple’s speech service; it is intentionally separate from CI because local speech assets must already be installed.
-
-An optional live check sends three synthetic requests, without capturing your screen or reading personal notes:
+To prepare an update while keeping an existing demo running:
 
 ```sh
-python3 scripts/smoke-jev.py --live
+./scripts/build.sh --stage
+.build/next/JevAssist.app/Contents/MacOS/JevAssist --self-test
+./scripts/restart.sh --dry-run
 ```
 
-It verifies a visible Box, an absent-target presence judgment, and verbatim goal selection. It uses your key and incurs API usage. Passing this check verifies connectivity and a small fixture; it is not a desktop accuracy benchmark.
+This builds separately under `.build/next/` and previews the restart without replacing or stopping the installed app. When ready, run `./scripts/restart.sh` or double-click **Restart Jev Assist.command**. The helper verifies signing compatibility, installs a newer staged build, retains a backup, and reopens `dist/JevAssist.app`. A normal in-app **Restart** or **⌘R** restarts without compiling.
 
-After building the engine, run `bash scripts/smoke-native.sh --live` to exercise the full Swift → Rust → Jev path against a generated photo-saving interface. This makes two synthetic requests and checks that the box points to the expected button. Add `--consensus` to make four requests (one goal and three Box/presence calls), validate the comparison metadata, and report the individual answers and combined box.
+For opt-in live checks and measured synthetic experiments, see the [evaluation guide](engine/evals/README.md). Live checks use your API key and incur usage; synthetic results do not establish real desktop accuracy or microphone-to-highlight latency. Physical multi-monitor behavior, permission-dependent capture, and complex workflows still need hands-on validation.
 
-For a repeatable comparison, run `python3 engine/evals/box_consensus.py --live` after a Rust debug build (requires Pillow). It generates a wide button, a small toolbar control, and a Dock-like icon, and reports per-sample/fused overlap with known bounds, coordinate spread, and standalone/batch latency. The default three rounds make 37 provider calls including warmup; `--rounds 1` makes 13. No real screens, notes, or speech are used.
+## Troubleshooting
 
-## Source layout
+- **Local speech model unavailable:** open **Settings → Advanced speech**, set up macOS Dictation for the same language, allow the assets to prepare, then choose **Check availability again** and **Apply and retry microphone**. Online recognition requires an explicit saved choice.
+- **Permission enabled but still unavailable:** restart after granting access. If an earlier build used a different signing identity, quit the app, remove only its entry from the affected macOS permission list, and add `dist/JevAssist.app` again. Preserve `.local-signing/` for future builds.
+- **Highlight does not advance:** it is held until meaningful screen change is detected. Task continuity and small interface changes remain areas of active iteration; a stalled highlight does not by itself show that transcription or the API is slow.
 
-```text
-Sources/JevAssist/             Native app, speech, capture, overlay, scheduling
-Sources/JevAssistCore/         Rust process adapter, shared types, highlight latch
-engine/                       Rust Jev engine and exact source-span selection
-Sources/JevAssistBridge/       Local Chrome native messaging host
-browser-extension/            Optional active-page context collector
-Tests/JevAssistCoreTests/      Deterministic core tests
-scripts/                      Build, launch, key setup, and synthetic API check
-```
+For bug reports, [open an issue](https://github.com/eligrip/computer-guidance-with-jev/issues) with your macOS version, reproduction steps, and a synthetic example where possible. Review [AGENTS.md](AGENTS.md) before changing guidance behavior.
 
-The project uses the installed [TypeSafe skill](.agents/skills/typesafe-ai/SKILL.md). See [Box](https://docs.typesafe.ai/primitives/box), [images](https://docs.typesafe.ai/images), and [source-value extraction](https://docs.typesafe.ai/cookbooks/pre_parsed_value_extraction_cookbook) for current API details.
+## License
 
-The [Jev Voice Turn experiment](https://github.com/dabit3/jev-experiments/tree/main/jev-voice-turn) informed partial-transcript scheduling and coalescing. This app uses screen freshness and visible-target judgments to guide continuously; it does not require a completed spoken turn before pointing.
+No project-wide license is currently included in this repository.
